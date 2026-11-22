@@ -24,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.campushub.data.academic.TongjiAcademicApiClient
 import com.example.campushub.data.canvas.CanvasApiClient
 import com.example.campushub.data.canvas.CanvasConfigStore
 import com.example.campushub.data.local.CalendarRepository
@@ -53,6 +54,7 @@ class MainActivity : ComponentActivity() {
   private val canvasApiClient by lazy { CanvasApiClient() }
   private val mailConfigStore by lazy { MailConfigStore(applicationContext) }
   private val imapMailClient by lazy { ImapMailClient() }
+  private val academicApiClient by lazy { TongjiAcademicApiClient() }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -65,6 +67,7 @@ class MainActivity : ComponentActivity() {
           canvasApiClient = canvasApiClient,
           mailConfigStore = mailConfigStore,
           imapMailClient = imapMailClient,
+          academicApiClient = academicApiClient,
         )
       }
     }
@@ -78,6 +81,7 @@ private fun CampusHubApp(
   canvasApiClient: CanvasApiClient,
   mailConfigStore: MailConfigStore,
   imapMailClient: ImapMailClient,
+  academicApiClient: TongjiAcademicApiClient,
 ) {
   var currentTab by rememberSaveable { mutableStateOf(HubTab.CALENDAR) }
 
@@ -89,7 +93,8 @@ private fun CampusHubApp(
     )
   val mailViewModel: MailViewModel =
     viewModel(factory = MailViewModel.Factory(mailConfigStore, imapMailClient, calendarRepository))
-  val academicViewModel: AcademicViewModel = viewModel()
+  val academicViewModel: AcademicViewModel =
+    viewModel(factory = AcademicViewModel.Factory(academicApiClient))
 
   Scaffold(
     modifier = Modifier.fillMaxSize(),
