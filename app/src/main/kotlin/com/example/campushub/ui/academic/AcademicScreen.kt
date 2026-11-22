@@ -7,6 +7,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
@@ -209,6 +210,7 @@ fun AcademicScreen(
 
           settings.javaScriptEnabled = true
           settings.domStorageEnabled = true
+          settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
           settings.useWideViewPort = true
           settings.loadWithOverviewMode = true
           settings.setSupportZoom(true)

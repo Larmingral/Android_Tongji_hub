@@ -11,7 +11,7 @@ data class AcademicUiState(
   val probeReport: String? = null,
 ) {
   companion object {
-    const val DEFAULT_URL = "https://1.tongji.edu.cn"
+    const val DEFAULT_URL = "https://1.tongji.edu.cn/workbench"
   }
 }
 
