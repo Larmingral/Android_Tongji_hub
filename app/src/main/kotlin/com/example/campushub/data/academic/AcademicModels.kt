@@ -1,5 +1,11 @@
 package com.example.campushub.data.academic
 
+data class AcademicMenuAuth(
+  val authId: Long,
+  val authNameCh: String,
+  val urlPath: String,
+)
+
 data class AcademicSessionInfo(
   val uid: String,
   val studentName: String,
@@ -9,6 +15,7 @@ data class AcademicSessionInfo(
   val currentTermName: String,
   val currentWeek: Int,
   val totalWeeks: Int,
+  val auths: List<AcademicMenuAuth> = emptyList(),
 )
 
 data class ClassPeriodTime(
@@ -32,6 +39,8 @@ data class AcademicNotice(
   val publisher: String,
   val publishTime: String,
   val isPinned: Boolean,
+  val attachmentNames: List<String> = emptyList(),
+  val isDetailLoaded: Boolean = false,
 )
 
 data class TimetableEntry(
@@ -99,6 +108,7 @@ data class AcademicDashboardData(
   val periodTimes: Map<Int, ClassPeriodTime>,
   val notices: List<AcademicNotice>,
   val timetable: List<TimetableEntry>,
+  val timetableError: String? = null,
   val examResult: ExamQueryResult,
   val grades: GradeOverview?,
 )

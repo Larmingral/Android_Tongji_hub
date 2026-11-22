@@ -27,3 +27,14 @@
 - 运行后在 App 内自行填写：
   - **Canvas**：在 `canvas.tongji.edu.cn` 的 `账号 -> 设置 -> 已批准的集成` 生成 Personal Access Token。
   - **邮箱**：在 `mail.tongji.edu.cn` 的 `设置 -> 安全设置 -> 客户端专用密码` 生成专用密码（IMAP 服务器 `imap.tongji.edu.cn`，端口 `993` SSL）。
+  - **教务**：在 `教务 -> 网页登录(免登)` 完成一次 `1.tongji.edu.cn` 统一身份认证后即可使用原生课表、通知与成绩视图。
+
+## 自动化构建与发布（GitHub Actions）
+
+仓库已配置 `.github/workflows/ci.yml`（推送自动运行单元测试）与 `.github/workflows/release.yml`（推送 `v*` 标签自动打包签名 Release APK 并发布到 GitHub Releases）。
+请在 GitHub 仓库 `Settings -> Secrets and variables -> Actions` 配置以下 4 个 Secrets：
+- `RELEASE_KEYSTORE_BASE64`（本地 `.jks` 签名密钥库的 Base64 编码）
+- `RELEASE_STORE_PASSWORD`
+- `RELEASE_KEY_ALIAS`
+- `RELEASE_KEY_PASSWORD`
+

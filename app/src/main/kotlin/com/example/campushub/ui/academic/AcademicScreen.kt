@@ -375,8 +375,34 @@ private fun NativeAcademicView(
               color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
           }
-          SelectionContainer {
-            Text(text = notice.contentText, style = MaterialTheme.typography.bodyMedium)
+          if (uiState.isNoticeDetailLoading) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
+          }
+          if (uiState.noticeDetailError != null) {
+            Text(
+              text = uiState.noticeDetailError,
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.error,
+            )
+          } else {
+            SelectionContainer {
+              Text(text = notice.contentText, style = MaterialTheme.typography.bodyMedium)
+            }
+          }
+          if (notice.attachmentNames.isNotEmpty()) {
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            Text(
+              text = "公告附件 (${notice.attachmentNames.size})",
+              style = MaterialTheme.typography.labelLarge,
+              fontWeight = FontWeight.SemiBold,
+            )
+            notice.attachmentNames.forEach { fileName ->
+              Text(
+                text = "• $fileName",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+              )
+            }
           }
         }
       },
@@ -543,6 +569,30 @@ private fun TimetableSection(
 
     if (uiState.isSwitchingTerm) {
       LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
+    }
+
+    val timetableError = uiState.activeTimetableError
+    if (timetableError != null) {
+      Column(
+        modifier = Modifier.fillMaxSize().padding(20.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+      ) {
+        Text(
+          text = timetableError,
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.error,
+          textAlign = TextAlign.Center,
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          Button(onClick = viewModel::retryCurrentTimetable) { Text("重拉课表") }
+          OutlinedButton(onClick = { viewModel.switchDisplayMode(AcademicDisplayMode.WEB_LOGIN) }) {
+            Text("切到网页查看")
+          }
+        }
+      }
+      return
     }
 
     if (weekEntries.isEmpty()) {

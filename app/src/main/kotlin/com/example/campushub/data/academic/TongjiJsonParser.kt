@@ -11,7 +11,6 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 
 object TongjiJsonParser {
@@ -25,6 +24,7 @@ object TongjiJsonParser {
     val name: String,
     val facultyName: String,
     val majorName: String,
+    val auths: List<AcademicMenuAuth> = emptyList(),
   )
 
   data class CurrentTermParsed(
@@ -48,11 +48,25 @@ object TongjiJsonParser {
     val extend = user["extend"].asObj() ?: JsonObject(emptyMap())
     val uid = data.str("uid").ifBlank { user.str("uid") }.ifBlank { extend.str("userId") }
     val name = user.str("name").ifBlank { extend.str("userName") }
+
+    val authsArray = data["auths"] as? JsonArray ?: JsonArray(emptyList())
+    val auths =
+      authsArray.mapNotNull { el ->
+        val obj = el.asObj() ?: return@mapNotNull null
+        val authId = obj.longVal("authId") ?: return@mapNotNull null
+        AcademicMenuAuth(
+          authId = authId,
+          authNameCh = obj.str("authNameCh"),
+          urlPath = obj.str("urlPath"),
+        )
+      }
+
     return SessionUserParsed(
       uid = uid,
       name = name,
       facultyName = user.str("facultyName"),
       majorName = extend.str("deptOrMajor"),
+      auths = auths,
     )
   }
 
@@ -111,61 +125,101 @@ object TongjiJsonParser {
       val title = obj.str("title")
       if (title.isBlank()) return@mapNotNull null
       val rawContent = obj.str("content")
-      val cleaned = HtmlTextCleaner.toReadableText(rawContent).ifBlank { "（该通知暂无详细正文，可在网页版查看）" }
+      val cleaned = HtmlTextCleaner.toReadableText(rawContent)
       AcademicNotice(
         id = obj.longVal("id") ?: title.hashCode().toLong(),
         title = title,
-        contentText = cleaned,
+        contentText = cleaned.ifBlank { "正在加载正文..." },
         publisher = obj.str("createUser").ifBlank { obj.str("faceUserName") },
         publishTime = obj.str("publishTime").ifBlank { obj.str("startTime") },
         isPinned = obj.str("topStatus") == "1",
+        isDetailLoaded = cleaned.isNotBlank(),
       )
     }
   }
 
+  fun parseNoticeDetail(body: String, fallback: AcademicNotice): AcademicNotice {
+    val root = json.parseToJsonElement(body).asObj() ?: return fallback
+    val code = root.intVal("code")
+    if (code != null && code != 200) {
+      error("获取通知正文失败 (code=$code): ${root.str("msg")}")
+    }
+    val data = root["data"].asObj() ?: return fallback
+    val cleaned =
+      HtmlTextCleaner.toReadableText(data.str("content"))
+        .ifBlank { fallback.contentText.takeIf { fallback.isDetailLoaded }.orEmpty() }
+        .ifBlank { "（该通知暂无文字正文）" }
+
+    val attArray = data["commonAttachmentList"] as? JsonArray ?: JsonArray(emptyList())
+    val attachmentNames =
+      attArray.mapNotNull { el ->
+        el.asObj()?.str("fileName")?.takeIf { it.isNotBlank() }
+      }
+
+    return fallback.copy(
+      title = data.str("title").ifBlank { fallback.title },
+      contentText = cleaned,
+      publisher = data.str("createUser").ifBlank { data.str("faceUserName") }.ifBlank { fallback.publisher },
+      publishTime = data.str("publishTime").ifBlank { fallback.publishTime },
+      attachmentNames = attachmentNames,
+      isDetailLoaded = true,
+    )
+  }
+
   fun parseTimetable(body: String): List<TimetableEntry> {
+    val rootElem = json.parseToJsonElement(body)
+    if (rootElem is JsonObject) {
+      val code = rootElem.intVal("code")
+      if (code != null && code != 200) {
+        val msg = rootElem.str("msg").ifBlank { rootElem.str("message") }
+        error("课表接口返回错误 (code=$code): $msg")
+      }
+    }
+
     val arr = unwrapDataArray(body)
     val result = mutableListOf<TimetableEntry>()
 
     for (el in arr) {
       val courseObj = el.asObj() ?: continue
       val teachingClassId = courseObj.longVal("teachingClassId") ?: 0L
-      val courseCode = courseObj.str("courseCode")
+      val courseCode = courseObj.str("newCourseCode").ifBlank { courseObj.str("courseCode") }
       val courseName = courseObj.str("courseName").ifBlank { courseObj.str("className") }
       if (courseName.isBlank()) continue
       val defaultTeacher = courseObj.str("teacherName")
-      val defaultCampus = courseObj.str("campus")
+      val defaultCampus = courseObj.str("campusI18n").ifBlank { courseObj.str("campus") }
       val credits = courseObj.doubleVal("credits")
       val compulsory = courseObj.str("compulsory")
-      val assessmentMode = courseObj.str("assessmentMode")
-      val defaultRoom = courseObj.str("classRoom").ifBlank { courseObj.str("classRoomName") }
+      val assessmentMode =
+        courseObj.str("assessmentModeI18n").ifBlank { courseObj.str("assessmentMode") }
+      val defaultRoom =
+        courseObj.firstStr("classRoomI18n", "classRoom", "classRoomName")
 
       val slots = courseObj["timeTableList"] as? JsonArray
       if (slots == null || slots.isEmpty()) continue
 
       for (slotEl in slots) {
         val slot = slotEl.asObj() ?: continue
-        val day = slot.intVal("dayOfWeek") ?: continue
-        val start = slot.intVal("timeStart") ?: continue
-        val end = slot.intVal("timeEnd") ?: start
+        val day = parseDayOfWeek(slot["dayOfWeek"]) ?: continue
+        val start = parsePeriodInt(slot["timeStart"]) ?: continue
+        val end = (parsePeriodInt(slot["timeEnd"]) ?: start).coerceAtLeast(start)
         val weekStr = slot.str("weekstr").ifBlank { slot.str("weekNum") }
         val weeks = parseWeekSet(slot["weeks"], weekStr)
         val room =
-          slot.str("timeAndRoom").ifBlank { slot.str("roomId") }.ifBlank { defaultRoom }
+          slot.firstStr("roomIdI18n", "timeAndRoom", "roomId", "roomLable").ifBlank { defaultRoom }
 
         result.add(
           TimetableEntry(
             teachingClassId = teachingClassId,
-            courseCode = slot.str("courseCode").ifBlank { courseCode },
+            courseCode = slot.firstStr("newCourseCode", "courseCode").ifBlank { courseCode },
             courseName = slot.str("courseName").ifBlank { courseName },
             teacherName = slot.str("teacherName").ifBlank { defaultTeacher },
-            campus = slot.str("campus").ifBlank { defaultCampus },
+            campus = slot.firstStr("campusI18n", "campus").ifBlank { defaultCampus },
             credits = credits,
             compulsory = compulsory,
             assessmentMode = assessmentMode,
             dayOfWeek = day,
             timeStart = start,
-            timeEnd = end.coerceAtLeast(start),
+            timeEnd = end,
             roomLabel = room,
             weeks = weeks,
             weekStr = weekStr,
@@ -177,10 +231,36 @@ object TongjiJsonParser {
     return result.sortedWith(compareBy<TimetableEntry> { it.dayOfWeek }.thenBy { it.timeStart })
   }
 
+  private fun parseDayOfWeek(el: JsonElement?): Int? {
+    val prim = el.asPrimitive() ?: return null
+    prim.intOrNull?.let { if (it in 1..7) return it }
+    prim.doubleOrNull?.toInt()?.let { if (it in 1..7) return it }
+    val s = prim.contentOrNull?.trim().orEmpty()
+    s.toIntOrNull()?.let { if (it in 1..7) return it }
+    return when {
+      s.contains("一") -> 1
+      s.contains("二") -> 2
+      s.contains("三") -> 3
+      s.contains("四") -> 4
+      s.contains("五") -> 5
+      s.contains("六") -> 6
+      s.contains("日") || s.contains("天") -> 7
+      else -> null
+    }
+  }
+
+  private fun parsePeriodInt(el: JsonElement?): Int? {
+    val prim = el.asPrimitive() ?: return null
+    prim.intOrNull?.let { return it }
+    prim.doubleOrNull?.let { return it.toInt() }
+    val s = prim.contentOrNull?.trim().orEmpty()
+    return s.toIntOrNull() ?: singleNumRegex.find(s)?.value?.toIntOrNull()
+  }
+
   fun parseWeekSet(weeksElem: JsonElement?, weekStr: String): Set<Int> {
     if (weeksElem is JsonArray && weeksElem.isNotEmpty()) {
       val parsed =
-        weeksElem.mapNotNull { it.asPrimitive()?.contentOrNull?.toIntOrNull() }.toSet()
+        weeksElem.mapNotNull { it.asPrimitive()?.contentOrNull?.toIntOrNull() ?: it.asPrimitive()?.intOrNull }.toSet()
       if (parsed.isNotEmpty()) return parsed
     } else if (weeksElem is JsonPrimitive && weeksElem.isString) {
       val fromPrimitive = parseWeekString(weeksElem.content)

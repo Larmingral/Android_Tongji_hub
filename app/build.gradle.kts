@@ -8,18 +8,37 @@ android {
   namespace = "com.example.campushub"
   compileSdk = 37
 
+  val ciVersionName = System.getenv("APP_VERSION_NAME")?.removePrefix("v")?.takeIf { it.isNotBlank() }
+  val ciVersionCode = System.getenv("APP_VERSION_CODE")?.toIntOrNull()
+  val keystorePath = System.getenv("SIGNING_KEYSTORE_PATH")
+  val hasReleaseSigning = !keystorePath.isNullOrBlank() && file(keystorePath).exists()
+
   defaultConfig {
     applicationId = "com.example.campushub"
     minSdk = 26
     targetSdk = 37
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = ciVersionCode ?: 1
+    versionName = ciVersionName ?: "1.0"
+  }
+
+  if (hasReleaseSigning) {
+    signingConfigs {
+      create("release") {
+        storeFile = file(keystorePath)
+        storePassword = System.getenv("SIGNING_STORE_PASSWORD")
+        keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+        keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+      }
+    }
   }
 
   buildTypes {
     release {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      if (hasReleaseSigning) {
+        signingConfig = signingConfigs.getByName("release")
+      }
     }
   }
 

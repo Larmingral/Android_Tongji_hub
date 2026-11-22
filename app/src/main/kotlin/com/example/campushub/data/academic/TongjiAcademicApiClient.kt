@@ -2,6 +2,7 @@ package com.example.campushub.data.academic
 
 import android.webkit.CookieManager
 import java.io.IOException
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -96,16 +97,21 @@ class TongjiAcademicApiClient {
               }.getOrDefault(emptyMap())
           }
 
-          val timetableDeferred = async {
-            if (calendarId <= 0L) emptyList()
-            else
+          val timetableResultDeferred = async {
+            if (calendarId <= 0L) {
+              Result.failure(IllegalStateException("未能获取当前学期 calendarId"))
+            } else {
               runCatching {
+                activateMenuAuthIfMatched(sessionParsed.auths, "TimeTable", "课表")
+                val encStudentCode =
+                  URLEncoder.encode(TongjiCrypto.staticEncrypt(sessionParsed.uid), "UTF-8")
                 val body =
                   get(
-                    "$BASE_URL/api/electionservice/reportManagement/findStudentTimetab?calendarId=$calendarId&studentCode=${sessionParsed.uid}&_t=$ts",
+                    "$BASE_URL/api/electionservice/reportManagement/findStudentTimetab?calendarId=$calendarId&studentCode=$encStudentCode&_t=$ts",
                   )
                 TongjiJsonParser.parseTimetable(body)
-              }.getOrDefault(emptyList())
+              }
+            }
           }
 
           val examCal = examCalendarDeferred.await()
@@ -137,6 +143,13 @@ class TongjiAcademicApiClient {
             }
           }
 
+          val timetableResult = timetableResultDeferred.await()
+          val timetableEntries = timetableResult.getOrDefault(emptyList())
+          val timetableError =
+            timetableResult.exceptionOrNull()?.let { err ->
+              "加载课表失败 (calendarId=$calendarId)：${err.message ?: "未知错误"}"
+            }
+
           AcademicDashboardData(
             session =
               AcademicSessionInfo(
@@ -148,11 +161,13 @@ class TongjiAcademicApiClient {
                 currentTermName = currentTerm.termName,
                 currentWeek = currentTerm.currentWeek,
                 totalWeeks = currentTerm.totalWeeks,
+                auths = sessionParsed.auths,
               ),
             terms = terms,
             periodTimes = periodDeferred.await(),
             notices = noticesDeferred.await(),
-            timetable = timetableDeferred.await(),
+            timetable = timetableEntries,
+            timetableError = timetableError,
             examResult = examResultDeferred.await(),
             grades = gradesDeferred.await(),
           )
@@ -160,13 +175,32 @@ class TongjiAcademicApiClient {
       }
     }
 
+  suspend fun fetchNoticeDetail(notice: AcademicNotice): Result<AcademicNotice> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val ts = System.currentTimeMillis()
+        val body =
+          get("$BASE_URL/api/commonservice/commonMsgPublish/findCommonMsgPublishById?id=${notice.id}&_t=$ts")
+        val detailed = TongjiJsonParser.parseNoticeDetail(body, notice)
+        runCatching {
+          postJson(
+            "$BASE_URL/api/commonservice/commonMsgPublish/markRead",
+            """{"ids":[${notice.id}]}""",
+          )
+        }
+        detailed
+      }
+    }
+
   suspend fun fetchTimetableForTerm(
     calendarId: Long,
     studentCode: String,
+    auths: List<AcademicMenuAuth>,
   ): Result<Pair<Map<Int, ClassPeriodTime>, List<TimetableEntry>>> =
     withContext(Dispatchers.IO) {
       runCatching {
         val ts = System.currentTimeMillis()
+        activateMenuAuthIfMatched(auths, "TimeTable", "课表")
         coroutineScope {
           val periodsDeferred = async {
             runCatching {
@@ -176,9 +210,11 @@ class TongjiAcademicApiClient {
             }.getOrDefault(emptyMap())
           }
           val timetableDeferred = async {
+            val encStudentCode =
+              URLEncoder.encode(TongjiCrypto.staticEncrypt(studentCode), "UTF-8")
             val body =
               get(
-                "$BASE_URL/api/electionservice/reportManagement/findStudentTimetab?calendarId=$calendarId&studentCode=$studentCode&_t=$ts",
+                "$BASE_URL/api/electionservice/reportManagement/findStudentTimetab?calendarId=$calendarId&studentCode=$encStudentCode&_t=$ts",
               )
             TongjiJsonParser.parseTimetable(body)
           }
@@ -186,6 +222,24 @@ class TongjiAcademicApiClient {
         }
       }
     }
+
+  private fun activateMenuAuthIfMatched(
+    auths: List<AcademicMenuAuth>,
+    urlKeyword: String,
+    nameKeyword: String,
+  ) {
+    val matched =
+      auths.firstOrNull {
+        it.urlPath.contains(urlKeyword, ignoreCase = true) ||
+          it.authNameCh.contains(nameKeyword)
+      } ?: return
+    runCatching {
+      postJson(
+        "$BASE_URL/api/sessionservice/session/currentAuthId",
+        """{"authId":${matched.authId}}""",
+      )
+    }
+  }
 
   private fun get(url: String): String {
     val request = baseRequestBuilder(url).get().build()

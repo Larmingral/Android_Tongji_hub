@@ -1,5 +1,6 @@
 package com.example.campushub
 
+import com.example.campushub.data.academic.AcademicNotice
 import com.example.campushub.data.academic.TongjiJsonParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -9,7 +10,7 @@ import org.junit.Test
 class TongjiJsonParserTest {
 
   @Test
-  fun parseSessionAndTermAndPeriods_extractsStructuredValues() {
+  fun parseSessionAndTermAndPeriods_extractsStructuredValuesAndAuths() {
     val sessionJson =
       """
       {
@@ -21,7 +22,11 @@ class TongjiJsonParserTest {
             "name": "同学甲",
             "facultyName": "电子与信息工程学院",
             "extend": { "deptOrMajor": "计算机科学与技术" }
-          }
+          },
+          "auths": [
+            {"authId": 1001, "authNameCh": "工作台", "urlPath": "/workbench"},
+            {"authId": 2002, "authNameCh": "个人课表", "urlPath": "/GraduateStudentTimeTable"}
+          ]
         }
       }
       """.trimIndent()
@@ -29,6 +34,8 @@ class TongjiJsonParserTest {
     assertEquals("2300001", session.uid)
     assertEquals("同学甲", session.name)
     assertEquals("计算机科学与技术", session.majorName)
+    assertEquals(2, session.auths.size)
+    assertEquals(2002L, session.auths[1].authId)
 
     val termJson =
       """
@@ -36,14 +43,14 @@ class TongjiJsonParserTest {
         "code": 200,
         "data": {
           "schoolCalendar": { "id": 122, "weekNum": 18 },
-          "week": 11,
+          "week": 10,
           "simpleName": "2026-2027-1"
         }
       }
       """.trimIndent()
     val term = TongjiJsonParser.parseCurrentTerm(termJson)
     assertEquals(122L, term.calendarId)
-    assertEquals(11, term.currentWeek)
+    assertEquals(10, term.currentWeek)
     assertEquals("2026-2027-1", term.termName)
 
     val detailJson =
@@ -64,8 +71,8 @@ class TongjiJsonParserTest {
   }
 
   @Test
-  fun parseNoticesAndTimetable_handlesWeeksAndHtmlContent() {
-    val noticeJson =
+  fun parseNoticeListAndDetail_handlesNullListContentAndDetailAttachments() {
+    val listJson =
       """
       {
         "code": 200,
@@ -74,7 +81,7 @@ class TongjiJsonParserTest {
             {
               "id": 9,
               "title": "关于期中退课的通知",
-              "content": "<p>请在周五前完成确认</p>",
+              "content": null,
               "createUser": "教务处",
               "publishTime": "2026-11-20 10:00",
               "topStatus": "1"
@@ -83,11 +90,32 @@ class TongjiJsonParserTest {
         }
       }
       """.trimIndent()
-    val notices = TongjiJsonParser.parseNotices(noticeJson)
+    val notices = TongjiJsonParser.parseNotices(listJson)
     assertEquals(1, notices.size)
-    assertTrue(notices[0].isPinned)
-    assertEquals("请在周五前完成确认", notices[0].contentText)
+    assertFalse(notices[0].isDetailLoaded)
 
+    val detailJson =
+      """
+      {
+        "code": 200,
+        "data": {
+          "id": 9,
+          "title": "关于期中退课的通知",
+          "content": "<p>请在周五前完成确认</p><p>详情见附件</p>",
+          "commonAttachmentList": [
+            {"id": 1, "fileName": "退课操作指南.pdf", "fileLacation": "obs/guide.pdf"}
+          ]
+        }
+      }
+      """.trimIndent()
+    val detailed = TongjiJsonParser.parseNoticeDetail(detailJson, notices[0])
+    assertTrue(detailed.isDetailLoaded)
+    assertTrue(detailed.contentText.contains("请在周五前完成确认"))
+    assertEquals(listOf("退课操作指南.pdf"), detailed.attachmentNames)
+  }
+
+  @Test
+  fun parseTimetable_handlesI18nFieldsWeeksArrayAndErrorCode() {
     val timetableJson =
       """
       {
@@ -100,13 +128,15 @@ class TongjiJsonParserTest {
             "credits": 3.5,
             "teacherName": "王老师",
             "compulsory": "必修",
+            "campusI18n": "嘉定校区",
             "timeTableList": [
               {
                 "dayOfWeek": 2,
                 "timeStart": 3,
                 "timeEnd": 4,
-                "timeAndRoom": "南楼302",
-                "weekstr": "1-8,10-12周(单)"
+                "roomIdI18n": "安楼A404",
+                "weeks": [1, 3, 5, 7],
+                "weekstr": "[1, 3, 5, 7]"
               }
             ]
           }
@@ -116,8 +146,16 @@ class TongjiJsonParserTest {
     val entries = TongjiJsonParser.parseTimetable(timetableJson)
     assertEquals(1, entries.size)
     assertEquals("编译原理", entries[0].courseName)
-    assertEquals(2, entries[0].dayOfWeek)
-    assertEquals(setOf(1, 3, 5, 7, 11), entries[0].weeks)
+    assertEquals("安楼A404", entries[0].roomLabel)
+    assertEquals("嘉定校区", entries[0].campus)
+    assertEquals(setOf(1, 3, 5, 7), entries[0].weeks)
+
+    val errorResult =
+      runCatching {
+        TongjiJsonParser.parseTimetable("""{"code":403,"msg":"无权访问当前菜单"}""")
+      }
+    assertTrue(errorResult.isFailure)
+    assertTrue(errorResult.exceptionOrNull()?.message?.contains("403") == true)
   }
 
   @Test

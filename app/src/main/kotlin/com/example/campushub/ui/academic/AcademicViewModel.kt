@@ -42,12 +42,15 @@ data class AcademicUiState(
   val isSwitchingTerm: Boolean = false,
   val needsWebLogin: Boolean = false,
   val errorMessage: String? = null,
+  val timetableErrorOverride: String? = null,
   val dashboard: AcademicDashboardData? = null,
   val selectedCalendarId: Long = 0L,
   val selectedWeek: Int = 1,
   val overridePeriods: Map<Int, ClassPeriodTime>? = null,
   val overrideTimetable: List<TimetableEntry>? = null,
   val selectedNotice: AcademicNotice? = null,
+  val isNoticeDetailLoading: Boolean = false,
+  val noticeDetailError: String? = null,
   val selectedCourseSlot: TimetableEntry? = null,
   val probeReport: String? = null,
 ) {
@@ -56,6 +59,9 @@ data class AcademicUiState(
 
   val activeTimetable: List<TimetableEntry>
     get() = overrideTimetable ?: dashboard?.timetable.orEmpty()
+
+  val activeTimetableError: String?
+    get() = timetableErrorOverride ?: if (overrideTimetable == null) dashboard?.timetableError else null
 
   val selectedTerm: AcademicCalendarTerm?
     get() = dashboard?.terms?.firstOrNull { it.id == selectedCalendarId }
@@ -104,7 +110,7 @@ class AcademicViewModel(
 
   fun refreshDashboard() {
     viewModelScope.launch {
-      _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+      _uiState.update { it.copy(isLoading = true, errorMessage = null, timetableErrorOverride = null) }
       apiClient
         .fetchDashboard()
         .onSuccess { data ->
@@ -113,6 +119,7 @@ class AcademicViewModel(
               isLoading = false,
               needsWebLogin = false,
               errorMessage = null,
+              timetableErrorOverride = null,
               dashboard = data,
               selectedCalendarId = data.session.currentCalendarId,
               selectedWeek = data.session.currentWeek,
@@ -134,29 +141,41 @@ class AcademicViewModel(
     }
   }
 
+  fun retryCurrentTimetable() {
+    val dash = _uiState.value.dashboard ?: return refreshDashboard()
+    val calId = _uiState.value.selectedCalendarId.takeIf { it > 0L } ?: dash.session.currentCalendarId
+    val term = dash.terms.firstOrNull { it.id == calId }
+    if (term != null) {
+      loadTermTimetable(term.id, dash.session.uid, _uiState.value.selectedWeek)
+    } else {
+      refreshDashboard()
+    }
+  }
+
   fun selectTerm(term: AcademicCalendarTerm) {
     val uid = _uiState.value.dashboard?.session?.uid.orEmpty()
     if (uid.isBlank() || term.id == _uiState.value.selectedCalendarId) return
+    val currentSessionCalId = _uiState.value.dashboard?.session?.currentCalendarId
+    val targetWeek =
+      if (term.id == currentSessionCalId) _uiState.value.dashboard?.session?.currentWeek ?: 1 else 1
+    loadTermTimetable(term.id, uid, targetWeek)
+  }
 
+  private fun loadTermTimetable(calendarId: Long, uid: String, targetWeek: Int) {
+    val auths = _uiState.value.dashboard?.session?.auths.orEmpty()
     viewModelScope.launch {
-      _uiState.update { it.copy(isSwitchingTerm = true) }
+      _uiState.update { it.copy(isSwitchingTerm = true, timetableErrorOverride = null) }
       apiClient
-        .fetchTimetableForTerm(term.id, uid)
+        .fetchTimetableForTerm(calendarId, uid, auths)
         .onSuccess { (periods, entries) ->
-          val currentSessionCalId = _uiState.value.dashboard?.session?.currentCalendarId
-          val defaultWeek =
-            if (term.id == currentSessionCalId) {
-              _uiState.value.dashboard?.session?.currentWeek ?: 1
-            } else {
-              1
-            }
           _uiState.update {
             it.copy(
               isSwitchingTerm = false,
-              selectedCalendarId = term.id,
-              selectedWeek = defaultWeek,
+              selectedCalendarId = calendarId,
+              selectedWeek = targetWeek,
               overridePeriods = periods,
               overrideTimetable = entries,
+              timetableErrorOverride = null,
             )
           }
         }
@@ -164,7 +183,9 @@ class AcademicViewModel(
           _uiState.update {
             it.copy(
               isSwitchingTerm = false,
-              errorMessage = err.message ?: "切换学期课表失败",
+              selectedCalendarId = calendarId,
+              overrideTimetable = emptyList(),
+              timetableErrorOverride = "拉取课表失败 (calendarId=$calendarId)：${err.message ?: "未知错误"}",
             )
           }
         }
@@ -190,11 +211,47 @@ class AcademicViewModel(
   }
 
   fun openNotice(notice: AcademicNotice) {
-    _uiState.update { it.copy(selectedNotice = notice) }
+    _uiState.update {
+      it.copy(
+        selectedNotice = notice,
+        isNoticeDetailLoading = !notice.isDetailLoaded,
+        noticeDetailError = null,
+      )
+    }
+    if (notice.isDetailLoaded) return
+
+    viewModelScope.launch {
+      apiClient
+        .fetchNoticeDetail(notice)
+        .onSuccess { detailed ->
+          _uiState.update { state ->
+            val updatedNotices =
+              state.dashboard?.notices?.map { item ->
+                if (item.id == detailed.id) detailed else item
+              }
+            state.copy(
+              isNoticeDetailLoading = false,
+              selectedNotice =
+                if (state.selectedNotice?.id == detailed.id) detailed else state.selectedNotice,
+              dashboard = state.dashboard?.copy(notices = updatedNotices ?: state.dashboard.notices),
+            )
+          }
+        }
+        .onFailure { err ->
+          _uiState.update { state ->
+            state.copy(
+              isNoticeDetailLoading = false,
+              noticeDetailError = err.message ?: "加载通知正文失败",
+            )
+          }
+        }
+    }
   }
 
   fun dismissNotice() {
-    _uiState.update { it.copy(selectedNotice = null) }
+    _uiState.update {
+      it.copy(selectedNotice = null, isNoticeDetailLoading = false, noticeDetailError = null)
+    }
   }
 
   fun openCourseSlot(entry: TimetableEntry) {
