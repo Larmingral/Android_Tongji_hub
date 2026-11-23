@@ -80,6 +80,16 @@ jobs:
           echo "apk=$OUT_APK" >> "$GITHUB_OUTPUT"
           echo "sha=${OUT_APK}.sha256" >> "$GITHUB_OUTPUT"
 
+      - name: Verify APK signature & print certificate fingerprints
+        run: |
+          APKSIGNER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner | sort -V | tail -n 1)"
+          if [ -n "$APKSIGNER" ] && [ -x "$APKSIGNER" ]; then
+            echo "### Signing Certificate Fingerprints (\`${{ steps.pkg.outputs.apk }}\`)" >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            "$APKSIGNER" verify --print-certs --verbose "${{ steps.pkg.outputs.apk }}" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:

@@ -35,12 +35,22 @@
 
 ## 自动化构建与发布（GitHub Actions）
 
-仓库已配置 `.github/workflows/ci.yml`（推送自动运行单元测试）与 `.github/workflows/release.yml`（推送 `v*` 标签自动打包签名 Release APK 并发布到 GitHub Releases）。
+仓库已配置 `.github/workflows/ci.yml`（推送自动运行单元测试）与 `.github/workflows/release.yml`（推送 `v*` 标签自动打包 R8 优化的签名 Release APK 并发布到 GitHub Releases，同时输出签名证书指纹）。
 请在 GitHub 仓库 `Settings -> Secrets and variables -> Actions` 配置以下 4 个 Secrets：
 - `RELEASE_KEYSTORE_BASE64`（本地 `.jks` 签名密钥库的 Base64 编码）
 - `RELEASE_STORE_PASSWORD`
 - `RELEASE_KEY_ALIAS`
 - `RELEASE_KEY_PASSWORD`
+
+## 安装说明与侧载验证
+
+- **应用包名**：`io.github.larmingral.tjhub`（若手机曾安装早期测试包名 `com.example.campushub` 的旧版本，请先卸载再安装新版）。
+- **校验安装包完整性**：每次 Release 均附带 `.sha256` 校验文件，安装前可核对哈希值确认未被篡改。
+- **关于国产系统“开发者身份未验证 / 签名来源不明”提示**：
+  - Release 包已启用正式密钥签名（v1/v2/v3）与 R8 代码压缩；
+  - 手机弹出该提示属于移动智能终端生态联盟 / Google 推行的 **ADV 侧载开发者实名校验**：
+    - **普通用户安装**：核对从官方 GitHub Releases 下载且 SHA-256 一致后，按系统引导确认继续安装即可（电脑连接 `adb install -r TJ-Hub-v*.apk` 可免冷却直接安装）。
+    - **维护者非上架消警**：可在小米澎湃 OS / OPPO / vivo 开发者平台完成个人实名后，使用后台的 **“侧载应用认证 / 空包签名认领”** 入口绑定包名 `io.github.larmingral.tjhub` 与当前签名证书（可在 Release Actions 日志摘要复制 `apksigner` 输出指纹），无需上架应用商店即可在联盟机型互认消警。
 
 ## 知识产权与版权归属
 

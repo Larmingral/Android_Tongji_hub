@@ -14,7 +14,7 @@ android {
   val hasReleaseSigning = !keystorePath.isNullOrBlank() && file(keystorePath).exists()
 
   defaultConfig {
-    applicationId = "com.example.campushub"
+    applicationId = "io.github.larmingral.tjhub"
     minSdk = 26
     targetSdk = 37
     versionCode = ciVersionCode ?: 1
@@ -28,13 +28,17 @@ android {
         storePassword = System.getenv("SIGNING_STORE_PASSWORD")
         keyAlias = System.getenv("SIGNING_KEY_ALIAS")
         keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+        enableV1Signing = true
+        enableV2Signing = true
+        enableV3Signing = true
       }
     }
   }
 
   buildTypes {
     release {
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       if (hasReleaseSigning) {
         signingConfig = signingConfigs.getByName("release")
