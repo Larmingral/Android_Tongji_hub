@@ -4,8 +4,12 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.campushub.data.auth.SsoRefreshResult
+import com.example.campushub.data.auth.TongjiCredentialStore
+import com.example.campushub.data.auth.TongjiSsoAutoLoginRunner
 import com.example.campushub.data.canvas.CanvasApiClient
 import com.example.campushub.data.canvas.CanvasAssignmentDetail
+import com.example.campushub.data.canvas.CanvasAuthRequiredException
 import com.example.campushub.data.canvas.CanvasConfigStore
 import com.example.campushub.data.canvas.CanvasCourse
 import com.example.campushub.data.canvas.CanvasCourseDetailData
@@ -20,6 +24,7 @@ import com.example.campushub.data.local.EventCategory
 import com.example.campushub.data.local.EventSource
 import com.example.campushub.util.FileOpener
 import java.io.File
+import java.net.URI
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,18 +55,21 @@ sealed interface CanvasSubPage {
 
 data class CanvasUiState(
   val baseUrl: String,
-  val tokenInput: String,
   val mode: CanvasViewMode,
-  val isConfigExpanded: Boolean,
   val isLoading: Boolean = false,
   val isFileOpening: Boolean = false,
   val dashboard: CanvasDashboardData? = null,
   val completedTasksExpanded: Boolean = false,
+  val noDueTasksExpanded: Boolean = false,
   val backStack: List<CanvasSubPage> = listOf(CanvasSubPage.Dashboard),
   val errorMessage: String? = null,
   val statusMessage: String? = null,
   val webUrlToLoad: String,
   val webReloadNonce: Int = 0,
+  val hasSavedCredentials: Boolean = false,
+  val maskedUsername: String? = null,
+  val isAutoLoggingIn: Boolean = false,
+  val showCredentialDialog: Boolean = false,
 ) {
   val currentSubPage: CanvasSubPage
     get() = backStack.lastOrNull() ?: CanvasSubPage.Dashboard
@@ -74,25 +82,78 @@ class CanvasViewModel(
   private val configStore: CanvasConfigStore,
   private val apiClient: CanvasApiClient,
   private val calendarRepository: CalendarRepository,
+  private val credentialStore: TongjiCredentialStore,
 ) : ViewModel() {
 
   private val initialUrl = configStore.baseUrl
-  private val initialToken = configStore.accessToken
+  private val initialCredSummary = credentialStore.statusFlow.value
 
   private val _uiState =
     MutableStateFlow(
       CanvasUiState(
         baseUrl = initialUrl,
-        tokenInput = initialToken,
         mode = configStore.preferredMode,
-        isConfigExpanded = initialToken.isBlank(),
         webUrlToLoad = initialUrl,
+        hasSavedCredentials = initialCredSummary.hasCredentials,
+        maskedUsername = initialCredSummary.maskedUsername,
       )
     )
   val uiState: StateFlow<CanvasUiState> = _uiState.asStateFlow()
 
   init {
-    if (initialToken.isNotBlank()) {
+    viewModelScope.launch {
+      credentialStore.statusFlow.collect { summary ->
+        _uiState.update {
+          it.copy(
+            hasSavedCredentials = summary.hasCredentials,
+            maskedUsername = summary.maskedUsername,
+          )
+        }
+      }
+    }
+    viewModelScope.launch {
+      if (initialCredSummary.hasCredentials || apiClient.hasValidCookieSession(initialUrl)) {
+        connectAndFetch()
+      }
+    }
+  }
+
+  fun openCredentialDialog() {
+    _uiState.update { it.copy(showCredentialDialog = true) }
+  }
+
+  fun dismissCredentialDialog() {
+    _uiState.update { it.copy(showCredentialDialog = false) }
+  }
+
+  fun saveSsoCredentials(username: String, password: String) {
+    credentialStore.saveCredentials(username, password)
+    _uiState.update { it.copy(showCredentialDialog = false) }
+    connectAndFetch()
+  }
+
+  fun clearSsoCredentials() {
+    credentialStore.clearCredentials()
+    _uiState.update { it.copy(showCredentialDialog = false) }
+  }
+
+  fun buildSsoAutofillJsIfSaved(): String? {
+    val creds = credentialStore.loadCredentials() ?: return null
+    return TongjiSsoAutoLoginRunner.buildAutofillJs(
+      username = creds.username,
+      password = creds.password,
+      autoSubmit = false,
+    )
+  }
+
+  fun onWebLoginLanded(url: String) {
+    val baseHost = runCatching { URI(_uiState.value.baseUrl).host.orEmpty() }.getOrDefault("")
+    val urlHost = runCatching { URI(url).host.orEmpty() }.getOrDefault("")
+    if (baseHost.isNotEmpty() &&
+      urlHost.equals(baseHost, ignoreCase = true) &&
+      !url.contains("/login", ignoreCase = true) &&
+      _uiState.value.dashboard == null
+    ) {
       connectAndFetch()
     }
   }
@@ -102,60 +163,37 @@ class CanvasViewModel(
     _uiState.update { it.copy(mode = mode, statusMessage = null) }
   }
 
-  fun updateBaseUrl(value: String) {
-    _uiState.update { it.copy(baseUrl = value, errorMessage = null) }
-  }
-
-  fun updateTokenInput(value: String) {
-    _uiState.update { it.copy(tokenInput = value, errorMessage = null) }
-  }
-
-  fun toggleConfigExpanded() {
-    _uiState.update { it.copy(isConfigExpanded = !it.isConfigExpanded) }
-  }
-
   fun toggleCompletedTasksExpanded() {
     _uiState.update { it.copy(completedTasksExpanded = !it.completedTasksExpanded) }
   }
 
+  fun toggleNoDueTasksExpanded() {
+    _uiState.update { it.copy(noDueTasksExpanded = !it.noDueTasksExpanded) }
+  }
+
   fun connectAndFetch() {
-    val current = _uiState.value
-    val cleanUrl = CanvasConfigStore.normalizeBaseUrl(current.baseUrl)
-    val cleanToken = current.tokenInput.trim()
-
+    val cleanUrl = CanvasConfigStore.normalizeBaseUrl(_uiState.value.baseUrl)
     configStore.baseUrl = cleanUrl
-    configStore.accessToken = cleanToken
-
-    if (cleanToken.isEmpty()) {
-      _uiState.update {
-        it.copy(
-          baseUrl = cleanUrl,
-          isConfigExpanded = true,
-          errorMessage = "请先填入 Canvas Access Token，或直接切换上方“内置网页”模式使用",
-        )
-      }
-      return
-    }
 
     viewModelScope.launch {
       _uiState.update {
         it.copy(
           baseUrl = cleanUrl,
-          tokenInput = cleanToken,
           isLoading = true,
           errorMessage = null,
           statusMessage = null,
         )
       }
-      apiClient
-        .fetchDashboard(cleanUrl, cleanToken)
+      withCanvasAutoSsoRetry(cleanUrl) {
+        apiClient.fetchDashboard(cleanUrl, token = "")
+      }
         .onSuccess { data ->
           _uiState.update {
             it.copy(
               isLoading = false,
               dashboard = data,
-              isConfigExpanded = false,
               errorMessage = null,
+              statusMessage = null,
             )
           }
         }
@@ -163,8 +201,8 @@ class CanvasViewModel(
           _uiState.update {
             it.copy(
               isLoading = false,
-              isConfigExpanded = true,
-              errorMessage = err.message ?: "连接 Canvas API 失败",
+              statusMessage = null,
+              errorMessage = err.message ?: "连接 Canvas 失败",
             )
           }
         }
@@ -177,8 +215,9 @@ class CanvasViewModel(
 
     val state = _uiState.value
     viewModelScope.launch {
-      apiClient
-        .fetchCourseDetail(state.baseUrl, state.tokenInput, course)
+      withCanvasAutoSsoRetry(state.baseUrl) {
+        apiClient.fetchCourseDetail(state.baseUrl, token = "", course)
+      }
         .onSuccess { detail ->
           updateTopCoursePage(course.id) {
             it.copy(isLoading = false, data = detail, errorMessage = null)
@@ -228,8 +267,9 @@ class CanvasViewModel(
 
     val state = _uiState.value
     viewModelScope.launch {
-      apiClient
-        .fetchAssignmentDetail(state.baseUrl, state.tokenInput, courseId, assignmentId, courseName)
+      withCanvasAutoSsoRetry(state.baseUrl) {
+        apiClient.fetchAssignmentDetail(state.baseUrl, token = "", courseId, assignmentId, courseName)
+      }
         .onSuccess { detail ->
           updateTopAssignmentPage(assignmentId) {
             it.copy(isLoading = false, data = detail, errorMessage = null)
@@ -305,11 +345,12 @@ class CanvasViewModel(
       }
       val apiUrl = item.apiUrl
       if (!apiUrl.isNullOrBlank()) {
-        val token = _uiState.value.tokenInput
+        val state = _uiState.value
         viewModelScope.launch {
           _uiState.update { it.copy(isFileOpening = true, statusMessage = null) }
-          apiClient
-            .resolveFileByApiUrl(apiUrl, token)
+          withCanvasAutoSsoRetry(state.baseUrl) {
+            apiClient.resolveFileByApiUrl(apiUrl, token = "", state.baseUrl)
+          }
             .onSuccess { resolved ->
               _uiState.update { it.copy(isFileOpening = false) }
               openCourseFile(context, resolved)
@@ -343,14 +384,15 @@ class CanvasViewModel(
     mimeType: String?,
     downloadUrl: String,
   ) {
-    val token = _uiState.value.tokenInput
+    val state = _uiState.value
     val safeName = FileOpener.sanitizeFileName(fileName, "canvas_file")
     val targetFile = File(FileOpener.downloadsDir(context), safeName)
 
     viewModelScope.launch {
       _uiState.update { it.copy(isFileOpening = true, statusMessage = null) }
-      apiClient
-        .downloadFile(downloadUrl, token, targetFile)
+      withCanvasAutoSsoRetry(state.baseUrl) {
+        apiClient.downloadFile(downloadUrl, token = "", targetFile, state.baseUrl)
+      }
         .onSuccess { downloaded ->
           _uiState.update { it.copy(isFileOpening = false) }
           FileOpener.openFile(context, downloaded, mimeType).onFailure { err ->
@@ -404,13 +446,49 @@ class CanvasViewModel(
     }
   }
 
+  private suspend fun <T> withCanvasAutoSsoRetry(
+    baseUrl: String,
+    action: suspend () -> Result<T>,
+  ): Result<T> {
+    val first = action()
+    if (first.isSuccess || first.exceptionOrNull() !is CanvasAuthRequiredException) {
+      return first
+    }
+    val creds = credentialStore.loadCredentials() ?: return first
+    val cleanBase = CanvasConfigStore.normalizeBaseUrl(baseUrl)
+    val expectedHost = runCatching { URI(cleanBase).host.orEmpty() }.getOrDefault("").ifBlank { "canvas.tongji.edu.cn" }
+
+    _uiState.update {
+      it.copy(
+        isAutoLoggingIn = true,
+        statusMessage = "正在通过同济统一身份认证自动续期 Canvas 会话...",
+      )
+    }
+    val refreshResult =
+      TongjiSsoAutoLoginRunner.refreshSession(
+        context = credentialStore.appContext,
+        entryUrl = "$cleanBase/login",
+        expectedHost = expectedHost,
+        credentials = creds,
+      ) {
+        apiClient.hasValidCookieSession(cleanBase)
+      }
+    _uiState.update { it.copy(isAutoLoggingIn = false) }
+
+    return when (refreshResult) {
+      is SsoRefreshResult.Success -> action()
+      is SsoRefreshResult.Failed -> Result.failure(CanvasAuthRequiredException(refreshResult.reason))
+    }
+  }
+
   class Factory(
     private val configStore: CanvasConfigStore,
     private val apiClient: CanvasApiClient,
     private val calendarRepository: CalendarRepository,
+    private val credentialStore: TongjiCredentialStore,
   ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-      CanvasViewModel(configStore, apiClient, calendarRepository) as T
+      CanvasViewModel(configStore, apiClient, calendarRepository, credentialStore) as T
   }
 }

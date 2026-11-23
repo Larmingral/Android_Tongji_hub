@@ -13,6 +13,15 @@
         android:usesCleartextTraffic="true"
         android:windowSoftInputMode="adjustResize"
         android:theme="@style/Theme.CampusHub">
+        <meta-data
+            android:name="com.example.campushub.AUTHOR"
+            android:value="Larmingral" />
+        <meta-data
+            android:name="com.example.campushub.COPYRIGHT"
+            android:value="Copyright (c) 2026 Larmingral. Original design and implementation of TJ Hub (MIT License)." />
+        <meta-data
+            android:name="com.example.campushub.REPOSITORY"
+            android:value="https://github.com/Larmingral/Android_Tongji_hub" />
         <activity
             android:name=".MainActivity"
             android:exported="true">

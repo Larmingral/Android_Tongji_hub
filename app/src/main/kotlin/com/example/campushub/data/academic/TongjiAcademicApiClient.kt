@@ -1,6 +1,7 @@
 package com.example.campushub.data.academic
 
 import android.webkit.CookieManager
+import java.io.File
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -25,7 +26,22 @@ class TongjiAcademicApiClient {
       .followSslRedirects(false)
       .build()
 
+  private val downloadClient =
+    client.newBuilder()
+      .followRedirects(true)
+      .followSslRedirects(true)
+      .build()
+
   private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+
+  suspend fun hasValidSession(): Boolean =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val ts = System.currentTimeMillis()
+        val sessionBody = get("$BASE_URL/api/sessionservice/session/getSessionUser?_t=$ts")
+        TongjiJsonParser.parseSessionUser(sessionBody).uid.isNotBlank()
+      }.getOrDefault(false)
+    }
 
   suspend fun fetchDashboard(): Result<AcademicDashboardData> =
     withContext(Dispatchers.IO) {
@@ -162,6 +178,9 @@ class TongjiAcademicApiClient {
                 currentWeek = currentTerm.currentWeek,
                 totalWeeks = currentTerm.totalWeeks,
                 auths = sessionParsed.auths,
+                aesKey = sessionParsed.aesKey,
+                aesIv = sessionParsed.aesIv,
+                sessionId = sessionParsed.sessionId,
               ),
             terms = terms,
             periodTimes = periodDeferred.await(),
@@ -223,6 +242,108 @@ class TongjiAcademicApiClient {
       }
     }
 
+  suspend fun downloadAttachment(
+    attachment: AcademicAttachment,
+    session: AcademicSessionInfo?,
+    destFile: File,
+  ): Result<File> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val rawLoc = attachment.fileLocation.trim()
+        if (rawLoc.isEmpty()) {
+          throw IOException("附件下载地址为空，无法下载")
+        }
+        if (rawLoc.startsWith("http://") || rawLoc.startsWith("https://")) {
+          return@runCatching downloadBinaryToFile(rawLoc, session?.sessionId.orEmpty(), destFile)
+        }
+
+        val ts = System.currentTimeMillis()
+        val candidates = buildList {
+          if (session != null && session.aesKey.isNotBlank() && session.aesIv.isNotBlank()) {
+            val enc = TongjiCrypto.sessionEncrypt(rawLoc, session.aesKey, session.aesIv)
+            add("$BASE_URL/api/commonservice/obsfile/downloadfile?objectkey=${URLEncoder.encode(enc, "UTF-8")}&_t=$ts")
+          }
+          val staticEnc = TongjiCrypto.staticEncrypt(rawLoc)
+          add("$BASE_URL/api/commonservice/obsfile/downloadfile?objectkey=${URLEncoder.encode(staticEnc, "UTF-8")}&_t=$ts")
+          add("$BASE_URL/api/commonservice/obsfile/downloadfile?objectkey=${URLEncoder.encode(rawLoc, "UTF-8")}&_t=$ts")
+        }.distinct()
+
+        var lastError: Throwable? = null
+        for (url in candidates) {
+          val attempt = runCatching {
+            downloadBinaryToFile(url, session?.sessionId.orEmpty(), destFile)
+          }
+          if (attempt.isSuccess) return@runCatching attempt.getOrThrow()
+          val err = attempt.exceptionOrNull()
+          if (err is AcademicAuthRequiredException) throw err
+          lastError = err
+        }
+        throw lastError ?: IOException("下载附件失败")
+      }
+    }
+
+  suspend fun downloadUrlWithSession(
+    url: String,
+    session: AcademicSessionInfo?,
+    destFile: File,
+  ): Result<File> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        downloadBinaryToFile(url, session?.sessionId.orEmpty(), destFile)
+      }
+    }
+
+  private fun downloadBinaryToFile(
+    url: String,
+    sessionId: String,
+    destFile: File,
+  ): File {
+    val cookies = CookieManager.getInstance().getCookie(BASE_URL).orEmpty()
+    if (cookies.isBlank()) {
+      throw AcademicAuthRequiredException("尚未登录同济教务系统，请保存账密自动续期或网页验证")
+    }
+    val reqBuilder =
+      Request.Builder()
+        .url(url)
+        .header("Cookie", cookies)
+        .header("Origin", BASE_URL)
+        .header("Referer", "$BASE_URL/workbench")
+        .get()
+    if (sessionId.isNotBlank()) {
+      reqBuilder.header("X-Token", sessionId)
+    }
+
+    downloadClient.newCall(reqBuilder.build()).execute().use { response ->
+      val finalUrl = response.request.url.toString().lowercase()
+      if (finalUrl.contains("ids.tongji.edu.cn") ||
+        finalUrl.contains("iam.tongji.edu.cn") ||
+        finalUrl.contains("/login")
+      ) {
+        throw AcademicAuthRequiredException("教务登录态已过期，需要重新认证后下载")
+      }
+      if (response.code == 401 || response.code == 403) {
+        throw AcademicAuthRequiredException("教务会话未授权（HTTP ${response.code}），需要重新认证")
+      }
+      if (!response.isSuccessful) {
+        throw IOException("附件下载失败（HTTP ${response.code}）")
+      }
+      val contentType = response.header("Content-Type").orEmpty().lowercase()
+      if (contentType.contains("text/html")) {
+        throw AcademicAuthRequiredException("登录态已失效，附件接口返回了登录页面")
+      }
+      if (contentType.contains("application/json")) {
+        val msg = response.body?.string().orEmpty()
+        throw IOException("附件下载接口返回错误：${msg.take(120)}")
+      }
+      val body = response.body ?: throw IOException("附件内容为空")
+      destFile.parentFile?.mkdirs()
+      body.byteStream().use { input ->
+        destFile.outputStream().use { output -> input.copyTo(output) }
+      }
+      return destFile
+    }
+  }
+
   private fun activateMenuAuthIfMatched(
     auths: List<AcademicMenuAuth>,
     urlKeyword: String,
@@ -254,7 +375,7 @@ class TongjiAcademicApiClient {
   private fun baseRequestBuilder(url: String): Request.Builder {
     val cookies = CookieManager.getInstance().getCookie(BASE_URL).orEmpty()
     if (cookies.isBlank()) {
-      throw AcademicAuthRequiredException("尚未登录同济教务系统，请先切到“网页登录”完成登录")
+      throw AcademicAuthRequiredException("尚未登录同济教务系统，请保存账密自动续期或网页验证")
     }
     return Request.Builder()
       .url(url)
@@ -269,13 +390,14 @@ class TongjiAcademicApiClient {
       if (response.code in 300..399) {
         val location = response.header("Location").orEmpty()
         if (location.contains("ids.tongji.edu.cn", ignoreCase = true) ||
+          location.contains("iam.tongji.edu.cn", ignoreCase = true) ||
           location.contains("login", ignoreCase = true)
         ) {
-          throw AcademicAuthRequiredException("登录态已过期，请切到“网页登录”重新认证")
+          throw AcademicAuthRequiredException("登录态已过期，请重新认证")
         }
       }
       if (response.code == 401 || response.code == 403) {
-        throw AcademicAuthRequiredException("教务会话未授权（HTTP ${response.code}），请在“网页登录”重新登录")
+        throw AcademicAuthRequiredException("教务会话未授权（HTTP ${response.code}），请重新认证")
       }
       if (!response.isSuccessful) {
         throw IOException("教务接口异常（HTTP ${response.code}）")
@@ -283,7 +405,7 @@ class TongjiAcademicApiClient {
       val body = response.body?.string().orEmpty()
       val trimmed = body.trimStart()
       if (trimmed.startsWith("<")) {
-        throw AcademicAuthRequiredException("登录态已失效，请切到“网页登录”完成验证")
+        throw AcademicAuthRequiredException("登录态已失效，请重新验证")
       }
       return body
     }

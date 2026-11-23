@@ -7,7 +7,6 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -50,7 +49,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -72,17 +70,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.campushub.data.auth.TongjiSsoAutoLoginRunner
 import com.example.campushub.data.canvas.CanvasCourse
+import com.example.campushub.data.canvas.CanvasJsonParser
 import com.example.campushub.data.canvas.CanvasTaskItem
 import com.example.campushub.data.canvas.CanvasViewMode
+import com.example.campushub.ui.auth.TongjiCredentialDialog
+import com.example.campushub.ui.auth.TongjiSsoStatusRow
 import com.example.campushub.util.HtmlTextCleaner
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
@@ -143,9 +143,21 @@ fun CanvasScreen(
           homeUrl = uiState.baseUrl,
           targetUrl = uiState.webUrlToLoad,
           reloadNonce = uiState.webReloadNonce,
+          buildAutofillJs = viewModel::buildSsoAutofillJsIfSaved,
+          onWebLoginLanded = viewModel::onWebLoginLanded,
           modifier = Modifier.weight(1f).fillMaxWidth(),
         )
     }
+  }
+
+  if (uiState.showCredentialDialog) {
+    TongjiCredentialDialog(
+      hasSavedCredentials = uiState.hasSavedCredentials,
+      maskedUsername = uiState.maskedUsername,
+      onDismiss = viewModel::dismissCredentialDialog,
+      onSave = viewModel::saveSsoCredentials,
+      onClear = viewModel::clearSsoCredentials,
+    )
   }
 }
 
@@ -154,106 +166,126 @@ private fun NativeCanvasDashboard(
   uiState: CanvasUiState,
   viewModel: CanvasViewModel,
 ) {
-  var showToken by remember { mutableStateOf(false) }
+  val groupedTasks =
+    remember(uiState.dashboard?.tasks) {
+      uiState.dashboard?.tasks?.let { CanvasJsonParser.groupAndSortTasks(it) }
+    }
 
   LazyColumn(
     modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
     verticalArrangement = Arrangement.spacedBy(10.dp),
   ) {
     item {
-      Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        shape = RoundedCornerShape(14.dp),
+      Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth(),
       ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            Column(modifier = Modifier.weight(1f)) {
-              val user = uiState.dashboard?.user
-              Text(
-                text =
-                  if (user != null) "已连接：${user.name.ifBlank { user.shortName ?: "Canvas" }}"
-                  else "同济 Canvas API 连接配置",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-              )
-              Text(
-                text = uiState.baseUrl,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-            }
-            if (uiState.dashboard != null) {
-              IconButton(onClick = viewModel::connectAndFetch, enabled = !uiState.isLoading) {
-                Icon(Icons.Default.Refresh, contentDescription = "刷新")
-              }
-            }
-            IconButton(onClick = viewModel::toggleConfigExpanded) {
-              Icon(Icons.Default.Settings, contentDescription = "配置 Token")
-            }
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
+            val user = uiState.dashboard?.user
+            Text(
+              text =
+                if (user != null) "已连接：${user.name.ifBlank { user.shortName ?: "Canvas" }}"
+                else "同济 Canvas（统一认证直连）",
+              style = MaterialTheme.typography.titleSmall,
+              fontWeight = FontWeight.SemiBold,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+              text =
+                if (uiState.isAutoLoggingIn) "正在通过同济统一认证自动续期..."
+                else if (uiState.hasSavedCredentials) "自动免登已开启（${uiState.maskedUsername ?: "已加密保存"}）"
+                else "点击右侧齿轮可保存同济账密自动续期",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
           }
-
-          AnimatedVisibility(visible = uiState.isConfigExpanded) {
-            Column(
-              modifier = Modifier.padding(top = 8.dp),
-              verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-              OutlinedTextField(
-                value = uiState.baseUrl,
-                onValueChange = viewModel::updateBaseUrl,
-                label = { Text("Canvas 地址") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-              )
-              OutlinedTextField(
-                value = uiState.tokenInput,
-                onValueChange = viewModel::updateTokenInput,
-                label = { Text("Personal Access Token") },
-                placeholder = { Text("粘贴从“个人设置 -> + New Access Token”生成的令牌") },
-                singleLine = true,
-                visualTransformation =
-                  if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
-                trailingIcon = {
-                  TextButton(onClick = { showToken = !showToken }) {
-                    Text(if (showToken) "隐藏" else "显示", fontSize = 12.sp)
-                  }
-                },
-                modifier = Modifier.fillMaxWidth(),
-              )
-              Text(
-                text = "获取位置：登录 canvas.tongji.edu.cn → 账号 → 设置 → 已批准的集成 → + New Access Token",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-              Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                  onClick = viewModel::connectAndFetch,
-                  enabled = !uiState.isLoading,
-                  modifier = Modifier.weight(1f),
-                ) {
-                  if (uiState.isLoading) {
-                    CircularProgressIndicator(
-                      modifier = Modifier.size(16.dp),
-                      strokeWidth = 2.dp,
-                      color = MaterialTheme.colorScheme.onPrimary,
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                  }
-                  Text("测试并拉取数据")
-                }
-                OutlinedButton(onClick = { viewModel.switchMode(CanvasViewMode.WEB_VIEW) }) {
-                  Text("改用网页版")
-                }
-              }
-            }
+          IconButton(
+            onClick = viewModel::connectAndFetch,
+            enabled = !uiState.isLoading,
+            modifier = Modifier.size(36.dp),
+          ) {
+            Icon(Icons.Default.Refresh, contentDescription = "刷新 Canvas", modifier = Modifier.size(20.dp))
+          }
+          IconButton(
+            onClick = viewModel::openCredentialDialog,
+            modifier = Modifier.size(36.dp),
+          ) {
+            Icon(Icons.Default.Settings, contentDescription = "统一身份认证自动登录设置", modifier = Modifier.size(20.dp))
           }
         }
       }
     }
 
-    if (uiState.errorMessage != null) {
+    if (uiState.isLoading && uiState.dashboard == null) {
+      item {
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(vertical = 28.dp),
+          horizontalArrangement = Arrangement.Center,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp)
+          Spacer(modifier = Modifier.width(10.dp))
+          Text(
+            text =
+              if (uiState.isAutoLoggingIn) "正在自动续期 Canvas 会话..."
+              else "正在同步 Canvas 课程与 DDL...",
+            style = MaterialTheme.typography.bodyMedium,
+          )
+        }
+      }
+    } else if (uiState.dashboard == null) {
+      item {
+        Card(
+          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+          shape = RoundedCornerShape(14.dp),
+        ) {
+          Column(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            Text(
+              text = "需要同济统一身份认证",
+              style = MaterialTheme.typography.titleMedium,
+              fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+              text = uiState.errorMessage ?: "无需 Token！保存一次同济学号密码（与教务共用），即可免密自动登录拉取 Canvas 课程与 DDL。",
+              style = MaterialTheme.typography.bodyMedium,
+              color =
+                if (uiState.errorMessage != null) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TongjiSsoStatusRow(
+              hasSavedCredentials = uiState.hasSavedCredentials,
+              maskedUsername = uiState.maskedUsername,
+              onOpenDialog = viewModel::openCredentialDialog,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              Button(
+                onClick =
+                  if (uiState.hasSavedCredentials) viewModel::connectAndFetch
+                  else viewModel::openCredentialDialog,
+                enabled = !uiState.isLoading,
+                modifier = Modifier.weight(1f),
+              ) {
+                Text(if (uiState.hasSavedCredentials) "重新拉取数据" else "记住账密免登")
+              }
+              OutlinedButton(onClick = { viewModel.switchMode(CanvasViewMode.WEB_VIEW) }) {
+                Text("内置网页验证")
+              }
+            }
+          }
+        }
+      }
+    } else if (uiState.errorMessage != null) {
       item {
         Surface(
           shape = RoundedCornerShape(12.dp),
@@ -269,7 +301,7 @@ private fun NativeCanvasDashboard(
               style = MaterialTheme.typography.bodyMedium,
             )
             TextButton(onClick = { viewModel.switchMode(CanvasViewMode.WEB_VIEW) }) {
-              Text("直接打开内置免登网页版")
+              Text("打开内置网页验证")
             }
           }
         }
@@ -286,9 +318,10 @@ private fun NativeCanvasDashboard(
     }
 
     val dashboard = uiState.dashboard
-    if (dashboard != null) {
-      val pendingTasks = dashboard.tasks.filter { !it.isSubmitted }
-      val completedTasks = dashboard.tasks.filter { it.isSubmitted }
+    if (dashboard != null && groupedTasks != null) {
+      val pendingTasks = groupedTasks.pendingWithDue
+      val completedTasks = groupedTasks.completedWithDue
+      val noDueTasks = groupedTasks.noDueDate
 
       item {
         Row(
@@ -312,7 +345,7 @@ private fun NativeCanvasDashboard(
       if (pendingTasks.isEmpty()) {
         item {
           Text(
-            text = "近期暂无未完成作业或待办",
+            text = "近期暂无带截止日期的未完成任务",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(vertical = 4.dp),
@@ -324,40 +357,31 @@ private fun NativeCanvasDashboard(
         }
       }
 
-      // Collapsible completed tasks section (collapsed by default)
       if (completedTasks.isNotEmpty()) {
         item {
-          Surface(
-            shape = RoundedCornerShape(10.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            modifier =
-              Modifier.fillMaxWidth()
-                .clickable(onClick = viewModel::toggleCompletedTasksExpanded),
-          ) {
-            Row(
-              modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-              verticalAlignment = Alignment.CenterVertically,
-            ) {
-              Text(
-                text = "已完成 / 已提交 (${completedTasks.size})",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-              )
-              Icon(
-                imageVector =
-                  if (uiState.completedTasksExpanded) Icons.Default.KeyboardArrowUp
-                  else Icons.Default.KeyboardArrowDown,
-                contentDescription = "展开或收起已完成任务",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-            }
-          }
+          CollapsibleTaskHeader(
+            title = "已完成 / 已提交 (${completedTasks.size})",
+            expanded = uiState.completedTasksExpanded,
+            onToggle = viewModel::toggleCompletedTasksExpanded,
+          )
         }
-
         if (uiState.completedTasksExpanded) {
           items(completedTasks, key = { "done_${it.externalId}" }) { task ->
+            CanvasTaskCard(task = task, onClick = { viewModel.openTask(task) })
+          }
+        }
+      }
+
+      if (noDueTasks.isNotEmpty()) {
+        item {
+          CollapsibleTaskHeader(
+            title = "无截止日期任务 (${noDueTasks.size})",
+            expanded = uiState.noDueTasksExpanded,
+            onToggle = viewModel::toggleNoDueTasksExpanded,
+          )
+        }
+        if (uiState.noDueTasksExpanded) {
+          items(noDueTasks, key = { "nodue_${it.externalId}" }) { task ->
             CanvasTaskCard(task = task, onClick = { viewModel.openTask(task) })
           }
         }
@@ -792,6 +816,37 @@ private fun NativeAssignmentDetailPage(
 }
 
 @Composable
+private fun CollapsibleTaskHeader(
+  title: String,
+  expanded: Boolean,
+  onToggle: () -> Unit,
+) {
+  Surface(
+    shape = RoundedCornerShape(10.dp),
+    color = MaterialTheme.colorScheme.surfaceContainerLow,
+    modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Text(
+        text = title,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Medium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.weight(1f),
+      )
+      Icon(
+        imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+        contentDescription = "展开或收起",
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+  }
+}
+
+@Composable
 private fun CanvasTaskCard(
   task: CanvasTaskItem,
   onClick: () -> Unit,
@@ -941,6 +996,8 @@ private fun PersistentCanvasWebView(
   homeUrl: String,
   targetUrl: String,
   reloadNonce: Int,
+  buildAutofillJs: () -> String?,
+  onWebLoginLanded: (String) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   var webViewRef by remember { mutableStateOf<WebView?>(null) }
@@ -1029,6 +1086,13 @@ private fun PersistentCanvasWebView(
                 canGoForward = view?.canGoForward() == true
                 currentTitle = view?.title?.ifBlank { "Canvas" } ?: "Canvas"
                 CookieManager.getInstance().flush()
+                if (TongjiSsoAutoLoginRunner.isSsoHost(url)) {
+                  buildAutofillJs()?.let { js ->
+                    view?.evaluateJavascript(js, null)
+                  }
+                } else if (!url.isNullOrBlank()) {
+                  onWebLoginLanded(url)
+                }
               }
             }
 

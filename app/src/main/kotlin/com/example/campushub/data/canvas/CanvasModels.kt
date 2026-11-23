@@ -215,4 +215,5 @@ data class CanvasDashboardData(
   val courses: List<CanvasCourse>,
   val tasks: List<CanvasTaskItem>,
   val syncedAtEpochMillis: Long = System.currentTimeMillis(),
+  val usedCookieFallback: Boolean = false,
 )

@@ -1,9 +1,11 @@
 package com.example.campushub.ui.calendar
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -52,7 +54,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -68,6 +72,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.campushub.data.local.CalendarEvent
 import com.example.campushub.data.local.EventCategory
 import com.example.campushub.data.local.EventSource
+import com.example.campushub.ui.auth.AboutAppDialog
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
@@ -78,13 +83,14 @@ private val WEEK_HEADERS = listOf("一", "二", "三", "四", "五", "六", "日
 private val DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 private const val MAX_INLINE_BARS_PER_CELL = 3
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun CalendarScreen(
   viewModel: CalendarViewModel,
   modifier: Modifier = Modifier,
 ) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+  var showAboutDialog by remember { mutableStateOf(false) }
 
   val anchorMonth = remember { YearMonth.now() }
   val anchorWeekStart = remember { startOfWeek(LocalDate.now()) }
@@ -157,6 +163,11 @@ fun CalendarScreen(
         style = MaterialTheme.typography.titleMedium,
         fontWeight = FontWeight.SemiBold,
         maxLines = 1,
+        modifier =
+          Modifier.combinedClickable(
+            onClick = {},
+            onLongClick = { showAboutDialog = true },
+          ),
       )
       IconButton(onClick = viewModel::nextPeriod, modifier = Modifier.size(34.dp)) {
         Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "下一页")
@@ -295,6 +306,10 @@ fun CalendarScreen(
       onDismiss = viewModel::dismissEditor,
       onSave = viewModel::saveEditorEvent,
     )
+  }
+
+  if (showAboutDialog) {
+    AboutAppDialog(onDismiss = { showAboutDialog = false })
   }
 }
 

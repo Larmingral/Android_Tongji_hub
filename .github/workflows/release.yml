@@ -74,7 +74,7 @@ jobs:
         id: pkg
         run: |
           VER="${{ steps.version.outputs.version }}"
-          OUT_APK="CampusHub-v${VER}.apk"
+          OUT_APK="TJ-Hub-v${VER}.apk"
           cp app/build/outputs/apk/release/app-release.apk "$OUT_APK"
           sha256sum "$OUT_APK" > "${OUT_APK}.sha256"
           echo "apk=$OUT_APK" >> "$GITHUB_OUTPUT"
@@ -84,7 +84,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: "CampusHub ${{ steps.version.outputs.tag }}"
+          name: "TJ Hub ${{ steps.version.outputs.tag }}"
           generate_release_notes: true
           files: |
             ${{ steps.pkg.outputs.apk }}

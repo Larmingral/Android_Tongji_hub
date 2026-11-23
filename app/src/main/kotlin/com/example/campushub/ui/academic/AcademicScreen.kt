@@ -1,12 +1,11 @@
 package com.example.campushub.ui.academic
 
 import android.annotation.SuppressLint
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import android.graphics.Bitmap
+import android.text.TextUtils
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -24,6 +23,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,7 +32,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -43,7 +42,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -52,7 +51,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,9 +58,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.PrimaryTabRow
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -78,6 +73,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -85,12 +81,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.campushub.data.academic.AcademicAttachment
 import com.example.campushub.data.academic.AcademicNotice
 import com.example.campushub.data.academic.ClassPeriodTime
 import com.example.campushub.data.academic.ExamEntry
 import com.example.campushub.data.academic.GradeTermSummary
 import com.example.campushub.data.academic.TimetableEntry
+import com.example.campushub.data.auth.TongjiSsoAutoLoginRunner
+import com.example.campushub.ui.auth.TongjiCredentialDialog
+import com.example.campushub.ui.auth.TongjiSsoStatusRow
 import kotlin.math.abs
 
 private val COURSE_BG_COLORS =
@@ -115,94 +117,6 @@ private val COURSE_TEXT_COLORS =
 
 private val DAY_LABELS = listOf("一", "二", "三", "四", "五", "六", "日")
 
-private const val INSTALL_HOOK_JS = """
-(function() {
-  if (window.__campusHookInstalled) return;
-  window.__campusHookInstalled = true;
-  window.__campusApiMap = window.__campusApiMap || {};
-  function toSchema(val, depth) {
-    if (depth > 4) return '...';
-    if (val === null || val === undefined) return 'null';
-    if (Array.isArray(val)) return val.length === 0 ? [] : [toSchema(val[0], depth + 1)];
-    var t = typeof val;
-    if (t === 'string') return '<string>';
-    if (t === 'number') return '<number>';
-    if (t === 'boolean') return '<boolean>';
-    if (t === 'object') {
-      var out = {};
-      var keys = Object.keys(val).slice(0, 22);
-      for (var i = 0; i < keys.length; i++) out[keys[i]] = toSchema(val[keys[i]], depth + 1);
-      return out;
-    }
-    return '<' + t + '>';
-  }
-  function trySchema(raw) {
-    if (!raw || typeof raw !== 'string') return null;
-    try { return toSchema(JSON.parse(raw), 0); } catch (e) { return null; }
-  }
-  function recordApi(method, rawUrl, reqBodyRaw, respTextRaw) {
-    try {
-      var u = new URL(rawUrl, location.href);
-      if (u.hostname.indexOf('tongji.edu.cn') === -1 || u.pathname.indexOf('/api/') === -1) return;
-      var m = (method || 'GET').toUpperCase();
-      var key = m + ' ' + u.pathname;
-      var qKeys = [];
-      u.searchParams.forEach(function(_, k) { if (qKeys.indexOf(k) === -1) qKeys.push(k); });
-      var prev = window.__campusApiMap[key] || {};
-      window.__campusApiMap[key] = {
-        method: m, path: u.pathname,
-        queryKeys: qKeys.length > 0 ? qKeys : (prev.queryKeys || []),
-        reqSchema: trySchema(reqBodyRaw) || prev.reqSchema || null,
-        respSchema: trySchema(respTextRaw) || prev.respSchema || null
-      };
-    } catch (e) {}
-  }
-  var origFetch = window.fetch;
-  if (origFetch) {
-    window.fetch = function(input, init) {
-      var url = typeof input === 'string' ? input : (input && input.url) || '';
-      var method = (init && init.method) || (input && input.method) || 'GET';
-      var reqBody = init && typeof init.body === 'string' ? init.body : null;
-      return origFetch.apply(this, arguments).then(function(resp) {
-        try { resp.clone().text().then(function(txt) { recordApi(method, url, reqBody, txt); }).catch(function() {}); } catch (e) {}
-        return resp;
-      });
-    };
-  }
-  var origOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function(method, url) {
-    this.__campusMethod = method || 'GET';
-    this.__campusUrl = url || '';
-    return origOpen.apply(this, arguments);
-  };
-  var origSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.send = function(body) {
-    var self = this;
-    var reqBody = typeof body === 'string' ? body : null;
-    this.addEventListener('load', function() {
-      var respText = null;
-      try { if (self.responseType === '' || self.responseType === 'text') respText = self.responseText; } catch (e) {}
-      recordApi(self.__campusMethod, self.__campusUrl, reqBody, respText);
-    });
-    return origSend.apply(this, arguments);
-  };
-})();
-"""
-
-private const val PROBE_DOM_JS = """
-(function() {
-  var map = window.__campusApiMap || {};
-  var apis = Object.keys(map).map(function(k) { return map[k]; });
-  return JSON.stringify({
-    title: document.title || '',
-    route: location.pathname + (location.hash || ''),
-    apis: apis,
-    tableHeaders: [],
-    menus: []
-  });
-})();
-"""
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AcademicScreen(
@@ -212,28 +126,21 @@ fun AcademicScreen(
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
   Column(modifier = modifier.fillMaxSize()) {
-    // Top mode switch: Native Academic vs Persistent Web Login
-    Row(
-      modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      SingleChoiceSegmentedButtonRow(modifier = Modifier.weight(1f)) {
-        AcademicDisplayMode.entries.forEachIndexed { idx, mode ->
-          SegmentedButton(
-            selected = uiState.displayMode == mode,
-            onClick = { viewModel.switchDisplayMode(mode) },
-            shape = SegmentedButtonDefaults.itemShape(index = idx, count = 2),
-          ) {
-            Text(mode.label, fontSize = 13.sp)
-          }
-        }
-      }
+    if (uiState.showWebFallback) {
+      EmergencyAcademicWebView(uiState = uiState, viewModel = viewModel)
+    } else {
+      NativeAcademicView(uiState = uiState, viewModel = viewModel)
     }
+  }
 
-    when (uiState.displayMode) {
-      AcademicDisplayMode.NATIVE -> NativeAcademicView(uiState = uiState, viewModel = viewModel)
-      AcademicDisplayMode.WEB_LOGIN -> PersistentAcademicWebView(uiState = uiState, viewModel = viewModel)
-    }
+  if (uiState.showCredentialDialog) {
+    TongjiCredentialDialog(
+      hasSavedCredentials = uiState.hasSavedCredentials,
+      maskedUsername = uiState.maskedUsername,
+      onDismiss = viewModel::dismissCredentialDialog,
+      onSave = viewModel::saveSsoCredentials,
+      onClear = viewModel::clearSsoCredentials,
+    )
   }
 }
 
@@ -246,38 +153,61 @@ private fun NativeAcademicView(
   val dash = uiState.dashboard
 
   Column(modifier = Modifier.fillMaxSize()) {
-    // Student info & refresh header
-    if (dash != null) {
-      Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+    // Compact single top row: Student Info + Refresh + Settings
+    Surface(
+      color = MaterialTheme.colorScheme.surfaceContainerLow,
+      shape = RoundedCornerShape(12.dp),
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
       ) {
-        Row(
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Column(modifier = Modifier.weight(1f)) {
-            val userLine =
+        Column(modifier = Modifier.weight(1f)) {
+          val userLine =
+            if (dash != null) {
               listOf(dash.session.studentName, dash.session.majorName.ifBlank { dash.session.facultyName })
                 .filter { it.isNotBlank() }
                 .joinToString(" · ")
-            Text(
-              text = userLine.ifBlank { "同济教务已连接" },
-              style = MaterialTheme.typography.titleSmall,
-              fontWeight = FontWeight.SemiBold,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-              text = "${dash.session.currentTermName} · 第 ${dash.session.currentWeek} 周",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
-          IconButton(onClick = viewModel::refreshDashboard, enabled = !uiState.isLoading) {
-            Icon(Icons.Default.Refresh, contentDescription = "刷新教务数据")
-          }
+                .ifBlank { "同济教务已连接" }
+            } else {
+              "同济教务"
+            }
+          val subLine =
+            if (dash != null) {
+              "${dash.session.currentTermName} · 第 ${dash.session.currentWeek} 周"
+            } else if (uiState.hasSavedCredentials) {
+              "已开启自动免登（${uiState.maskedUsername ?: "已保存"}）"
+            } else {
+              "点击右侧齿轮可保存账密自动免登"
+            }
+          Text(
+            text = userLine,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+          Text(
+            text = subLine,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+        IconButton(
+          onClick = viewModel::refreshDashboard,
+          enabled = !uiState.isLoading,
+          modifier = Modifier.size(36.dp),
+        ) {
+          Icon(Icons.Default.Refresh, contentDescription = "刷新教务数据", modifier = Modifier.size(20.dp))
+        }
+        IconButton(
+          onClick = viewModel::openCredentialDialog,
+          modifier = Modifier.size(36.dp),
+        ) {
+          Icon(Icons.Default.Settings, contentDescription = "统一身份认证自动登录设置", modifier = Modifier.size(20.dp))
         }
       }
     }
@@ -287,7 +217,12 @@ private fun NativeAcademicView(
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
           CircularProgressIndicator()
           Spacer(modifier = Modifier.height(10.dp))
-          Text("正在同步同济教务数据...", style = MaterialTheme.typography.bodyMedium)
+          Text(
+            text =
+              if (uiState.isAutoLoggingIn) "登录态已过期，正在后台自动续期同济统一身份认证..."
+              else "正在同步同济教务数据...",
+            style = MaterialTheme.typography.bodyMedium,
+          )
         }
       }
       return
@@ -313,18 +248,26 @@ private fun NativeAcademicView(
               fontWeight = FontWeight.Bold,
             )
             Text(
-              text = uiState.errorMessage ?: "请先在“网页登录(免登)”完成一次登录，登录态会自动共享到原生界面。",
+              text = uiState.errorMessage ?: "请先保存账密开启自动续期，或在“网页登录(免登)”完成一次登录。",
               style = MaterialTheme.typography.bodyMedium,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
               textAlign = TextAlign.Center,
             )
+            TongjiSsoStatusRow(
+              hasSavedCredentials = uiState.hasSavedCredentials,
+              maskedUsername = uiState.maskedUsername,
+              onOpenDialog = viewModel::openCredentialDialog,
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-              Button(onClick = { viewModel.switchDisplayMode(AcademicDisplayMode.WEB_LOGIN) }) {
-                Text("去网页登录")
+              Button(onClick = viewModel::openCredentialDialog) {
+                Text(if (uiState.hasSavedCredentials) "重设自动登录" else "记住账密免登")
               }
-              OutlinedButton(onClick = viewModel::refreshDashboard) {
-                Text("重试加载")
+              OutlinedButton(onClick = { viewModel.openWebFallback() }) {
+                Text("网页验证")
               }
+            }
+            TextButton(onClick = viewModel::refreshDashboard) {
+              Text("重试加载")
             }
           }
         }
@@ -359,56 +302,15 @@ private fun NativeAcademicView(
 
   val notice = uiState.selectedNotice
   if (notice != null) {
-    AlertDialog(
-      onDismissRequest = viewModel::dismissNotice,
-      title = { Text(notice.title, style = MaterialTheme.typography.titleMedium) },
-      text = {
-        Column(
-          modifier = Modifier.verticalScroll(rememberScrollState()),
-          verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-          val meta = listOf(notice.publisher, notice.publishTime).filter { it.isNotBlank() }
-          if (meta.isNotEmpty()) {
-            Text(
-              text = meta.joinToString(" · "),
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
-          if (uiState.isNoticeDetailLoading) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
-          }
-          if (uiState.noticeDetailError != null) {
-            Text(
-              text = uiState.noticeDetailError,
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.error,
-            )
-          } else {
-            SelectionContainer {
-              Text(text = notice.contentText, style = MaterialTheme.typography.bodyMedium)
-            }
-          }
-          if (notice.attachmentNames.isNotEmpty()) {
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            Text(
-              text = "公告附件 (${notice.attachmentNames.size})",
-              style = MaterialTheme.typography.labelLarge,
-              fontWeight = FontWeight.SemiBold,
-            )
-            notice.attachmentNames.forEach { fileName ->
-              Text(
-                text = "• $fileName",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-              )
-            }
-          }
-        }
-      },
-      confirmButton = {
-        TextButton(onClick = viewModel::dismissNotice) { Text("关闭") }
-      },
+    NoticeDetailDialog(
+      notice = notice,
+      isLoadingDetail = uiState.isNoticeDetailLoading,
+      detailError = uiState.noticeDetailError,
+      isAttachmentOpening = uiState.isAttachmentOpening,
+      attachmentStatus = uiState.attachmentStatus,
+      onOpenLink = viewModel::openNoticeLink,
+      onOpenAttachment = viewModel::openAttachment,
+      onDismiss = viewModel::dismissNotice,
     )
   }
 
@@ -498,72 +400,106 @@ private fun TimetableSection(
       }
     }
 
-  var showTermMenu by remember { mutableStateOf(false) }
+  var showYearMenu by remember { mutableStateOf(false) }
   val currentSession = uiState.dashboard?.session
   val isCurrentWeek =
     currentSession != null &&
       uiState.selectedCalendarId == currentSession.currentCalendarId &&
       uiState.selectedWeek == currentSession.currentWeek
 
+  val years = uiState.distinctYears
+  val yearTerms = uiState.termsInSelectedYear
+
   Column(modifier = Modifier.fillMaxSize()) {
-    // Term + week + Grid/List controls
+    // Year dropdown + Binary Term toggle + Week stepper (Grid-only view)
     Row(
-      modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      Box {
-        OutlinedButton(
-          onClick = { showTermMenu = true },
-          contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-          modifier = Modifier.height(32.dp),
-        ) {
-          Text(
-            text = uiState.selectedTerm?.fullName ?: currentSession?.currentTermName.orEmpty().ifBlank { "学期" },
-            fontSize = 11.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
-          Icon(Icons.Default.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(16.dp))
-        }
-        DropdownMenu(expanded = showTermMenu, onDismissRequest = { showTermMenu = false }) {
-          uiState.dashboard?.terms.orEmpty().forEach { term ->
-            DropdownMenuItem(
-              text = { Text(term.fullName) },
-              onClick = {
-                showTermMenu = false
-                viewModel.selectTerm(term)
-              },
+      if (years.isNotEmpty()) {
+        Box {
+          OutlinedButton(
+            onClick = { showYearMenu = true },
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+            modifier = Modifier.height(30.dp),
+          ) {
+            Text(
+              text = uiState.selectedYearLabel.removeSuffix("学年").ifBlank { "学年" },
+              fontSize = 11.sp,
+              maxLines = 1,
             )
+            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "选择学年", modifier = Modifier.size(15.dp))
+          }
+          DropdownMenu(expanded = showYearMenu, onDismissRequest = { showYearMenu = false }) {
+            years.forEach { year ->
+              DropdownMenuItem(
+                text = { Text(year) },
+                onClick = {
+                  showYearMenu = false
+                  viewModel.selectYear(year)
+                },
+              )
+            }
           }
         }
+        Spacer(modifier = Modifier.width(6.dp))
       }
 
-      Spacer(modifier = Modifier.width(4.dp))
-      IconButton(onClick = viewModel::previousWeek, modifier = Modifier.size(30.dp)) {
-        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "上一周")
-      }
-      Text(
-        text = if (isCurrentWeek) "第${uiState.selectedWeek}周(本周)" else "第${uiState.selectedWeek}周",
-        fontSize = 12.sp,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.clickable(onClick = viewModel::jumpToCurrentWeek),
-      )
-      IconButton(onClick = viewModel::nextWeek, modifier = Modifier.size(30.dp)) {
-        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "下一周")
+      if (yearTerms.isNotEmpty()) {
+        Surface(
+          shape = RoundedCornerShape(8.dp),
+          border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+          color = MaterialTheme.colorScheme.surface,
+        ) {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            yearTerms.forEachIndexed { index, term ->
+              if (index > 0) {
+                Box(
+                  modifier =
+                    Modifier.width(1.dp)
+                      .height(18.dp)
+                      .background(MaterialTheme.colorScheme.outlineVariant)
+                )
+              }
+              val selected = term.id == uiState.selectedCalendarId
+              Box(
+                modifier =
+                  Modifier.background(
+                    if (selected) MaterialTheme.colorScheme.primaryContainer
+                    else Color.Transparent
+                  )
+                    .clickable { viewModel.selectTerm(term) }
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center,
+              ) {
+                Text(
+                  text = term.termLabel.ifBlank { term.fullName },
+                  fontSize = 11.sp,
+                  fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                  color =
+                    if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                  maxLines = 1,
+                )
+              }
+            }
+          }
+        }
       }
 
       Spacer(modifier = Modifier.weight(1f))
 
-      SingleChoiceSegmentedButtonRow(modifier = Modifier.height(32.dp)) {
-        TimetableViewStyle.entries.forEachIndexed { idx, style ->
-          SegmentedButton(
-            selected = uiState.timetableStyle == style,
-            onClick = { viewModel.setTimetableStyle(style) },
-            shape = SegmentedButtonDefaults.itemShape(index = idx, count = 2),
-          ) {
-            Text(style.label, fontSize = 11.sp)
-          }
-        }
+      IconButton(onClick = viewModel::previousWeek, modifier = Modifier.size(28.dp)) {
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "上一周")
+      }
+      Text(
+        text = if (isCurrentWeek) "第${uiState.selectedWeek}周(本周)" else "第${uiState.selectedWeek}周",
+        fontSize = 11.5.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.clickable(onClick = viewModel::jumpToCurrentWeek),
+      )
+      IconButton(onClick = viewModel::nextWeek, modifier = Modifier.size(28.dp)) {
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "下一周")
       }
     }
 
@@ -587,8 +523,8 @@ private fun TimetableSection(
         Spacer(modifier = Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           Button(onClick = viewModel::retryCurrentTimetable) { Text("重拉课表") }
-          OutlinedButton(onClick = { viewModel.switchDisplayMode(AcademicDisplayMode.WEB_LOGIN) }) {
-            Text("切到网页查看")
+          OutlinedButton(onClick = { viewModel.openWebFallback(timetableError) }) {
+            Text("网页验证")
           }
         }
       }
@@ -600,20 +536,11 @@ private fun TimetableSection(
       return
     }
 
-    when (uiState.timetableStyle) {
-      TimetableViewStyle.GRID ->
-        TimetableGrid(
-          entries = weekEntries,
-          periodTimes = uiState.activePeriods,
-          onSlotClick = viewModel::openCourseSlot,
-        )
-      TimetableViewStyle.LIST ->
-        TimetableDailyList(
-          entries = weekEntries,
-          periodTimes = uiState.activePeriods,
-          onSlotClick = viewModel::openCourseSlot,
-        )
-    }
+    TimetableGrid(
+      entries = weekEntries,
+      periodTimes = uiState.activePeriods,
+      onSlotClick = viewModel::openCourseSlot,
+    )
   }
 }
 
@@ -724,65 +651,6 @@ private fun TimetableGrid(
                 )
               }
             }
-          }
-        }
-      }
-    }
-  }
-}
-
-@Composable
-private fun TimetableDailyList(
-  entries: List<TimetableEntry>,
-  periodTimes: Map<Int, ClassPeriodTime>,
-  onSlotClick: (TimetableEntry) -> Unit,
-) {
-  val grouped = entries.groupBy { it.dayOfWeek }.toSortedMap()
-  LazyColumn(
-    modifier = Modifier.fillMaxSize(),
-    contentPadding = PaddingValues(12.dp),
-    verticalArrangement = Arrangement.spacedBy(10.dp),
-  ) {
-    grouped.forEach { (day, dayEntries) ->
-      item(key = "header_$day") {
-        Text(
-          text = "周${DAY_LABELS.getOrElse(day - 1) { day.toString() }}",
-          style = MaterialTheme.typography.titleSmall,
-          fontWeight = FontWeight.Bold,
-          color = MaterialTheme.colorScheme.primary,
-        )
-      }
-      items(dayEntries) { entry ->
-        val startTime = periodTimes[entry.timeStart]?.beginTime.orEmpty()
-        val endTime = periodTimes[entry.timeEnd]?.endTime.orEmpty()
-        val timeRange =
-          if (startTime.isNotBlank() && endTime.isNotBlank()) {
-            "第${entry.timeStart}-${entry.timeEnd}节 ($startTime-$endTime)"
-          } else {
-            "第${entry.timeStart}-${entry.timeEnd}节"
-          }
-        val colorIdx = abs(entry.courseName.hashCode()) % COURSE_BG_COLORS.size
-
-        Surface(
-          shape = RoundedCornerShape(12.dp),
-          color = COURSE_BG_COLORS[colorIdx].copy(alpha = 0.65f),
-          modifier = Modifier.fillMaxWidth().clickable { onSlotClick(entry) },
-        ) {
-          Column(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
-          ) {
-            Text(
-              text = entry.courseName,
-              style = MaterialTheme.typography.bodyLarge,
-              fontWeight = FontWeight.SemiBold,
-              color = COURSE_TEXT_COLORS[colorIdx],
-            )
-            Text(
-              text = listOf(timeRange, entry.roomLabel, entry.teacherName).filter { it.isNotBlank() }.joinToString(" · "),
-              style = MaterialTheme.typography.bodySmall,
-              color = COURSE_TEXT_COLORS[colorIdx].copy(alpha = 0.85f),
-            )
           }
         }
       }
@@ -971,6 +839,202 @@ private fun GradeStatColumn(label: String, value: String) {
   }
 }
 
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun NoticeDetailDialog(
+  notice: AcademicNotice,
+  isLoadingDetail: Boolean,
+  detailError: String?,
+  isAttachmentOpening: Boolean,
+  attachmentStatus: String?,
+  onOpenLink: (android.content.Context, String) -> Unit,
+  onOpenAttachment: (android.content.Context, AcademicAttachment) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val context = LocalContext.current
+  val textColorHex = String.format("#%06X", 0xFFFFFF and MaterialTheme.colorScheme.onSurface.toArgb())
+  val linkColorHex = String.format("#%06X", 0xFFFFFF and MaterialTheme.colorScheme.primary.toArgb())
+  val borderColorHex = String.format("#%06X", 0xFFFFFF and MaterialTheme.colorScheme.outlineVariant.toArgb())
+
+  val htmlPayload =
+    remember(notice.id, notice.contentHtml, notice.contentText, textColorHex, linkColorHex, borderColorHex) {
+      val inner =
+        notice.contentHtml.trim().ifBlank {
+          "<p>${TextUtils.htmlEncode(notice.contentText).replace("\n", "<br/>")}</p>"
+        }
+      """
+      <!doctype html>
+      <html>
+      <head>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0"/>
+        <style>
+          html, body {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            color: $textColorHex;
+            font-size: 14.5px;
+            line-height: 1.65;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+          }
+          a { color: $linkColorHex; text-decoration: underline; }
+          img { max-width: 100%; height: auto; }
+          table {
+            width: 100% !important;
+            max-width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            display: block;
+            overflow-x: auto;
+          }
+          td, th { border: 1px solid $borderColorHex; padding: 4px 6px; }
+          p { margin: 0 0 8px 0; }
+        </style>
+      </head>
+      <body>$inner</body>
+      </html>
+      """.trimIndent()
+    }
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false),
+  ) {
+    Surface(
+      shape = RoundedCornerShape(18.dp),
+      color = MaterialTheme.colorScheme.surfaceContainerHigh,
+      modifier = Modifier.fillMaxWidth(0.94f).heightIn(max = 680.dp),
+    ) {
+      Column(
+        modifier = Modifier.fillMaxWidth().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        Text(
+          text = notice.title,
+          style = MaterialTheme.typography.titleMedium,
+          fontWeight = FontWeight.Bold,
+        )
+        val meta = listOf(notice.publisher, notice.publishTime).filter { it.isNotBlank() }
+        if (meta.isNotEmpty()) {
+          Text(
+            text = meta.joinToString(" · "),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+
+        if (isLoadingDetail || isAttachmentOpening) {
+          LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
+        }
+
+        if (detailError != null) {
+          Text(
+            text = detailError,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+          )
+        } else {
+          val contentTag = notice.id to htmlPayload
+          AndroidView(
+            modifier = Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(min = 140.dp, max = 380.dp),
+            factory = { ctx ->
+              WebView(ctx).apply {
+                CookieManager.getInstance().setAcceptCookie(true)
+                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                settings.javaScriptEnabled = false
+                settings.useWideViewPort = false
+                settings.loadWithOverviewMode = true
+                settings.defaultTextEncodingName = "utf-8"
+                webViewClient =
+                  object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                      view: WebView?,
+                      request: WebResourceRequest?,
+                    ): Boolean {
+                      val target = request?.url?.toString().orEmpty()
+                      if (target.isNotBlank()) {
+                        onOpenLink(context, target)
+                      }
+                      return true
+                    }
+                  }
+                tag = contentTag
+                loadDataWithBaseURL("https://1.tongji.edu.cn/", htmlPayload, "text/html", "utf-8", null)
+              }
+            },
+            update = { webView ->
+              if (webView.tag != contentTag) {
+                webView.tag = contentTag
+                webView.loadDataWithBaseURL("https://1.tongji.edu.cn/", htmlPayload, "text/html", "utf-8", null)
+              }
+            },
+          )
+        }
+
+        if (notice.attachments.isNotEmpty()) {
+          HorizontalDivider()
+          Text(
+            text = "公告附件 (${notice.attachments.size}) · 点击下载打开",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+          )
+          Column(
+            modifier = Modifier.fillMaxWidth().heightIn(max = 150.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+          ) {
+            notice.attachments.forEach { att ->
+              Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                modifier =
+                  Modifier.fillMaxWidth()
+                    .clickable(enabled = !isAttachmentOpening) { onOpenAttachment(context, att) },
+              ) {
+                Row(
+                  modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Text(
+                    text = att.fileName,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                  )
+                  Spacer(modifier = Modifier.width(8.dp))
+                  Text(
+                    text = if (isAttachmentOpening) "处理中" else "下载",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                  )
+                }
+              }
+            }
+          }
+        }
+
+        if (attachmentStatus != null) {
+          Text(
+            text = attachmentStatus,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+          )
+        }
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+          TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+      }
+    }
+  }
+}
+
 @Composable
 private fun CourseSlotDialog(
   entry: TimetableEntry,
@@ -1025,19 +1089,22 @@ private fun CenteredNotice(text: String) {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun PersistentAcademicWebView(
+private fun EmergencyAcademicWebView(
   uiState: AcademicUiState,
   viewModel: AcademicViewModel,
 ) {
-  val context = LocalContext.current
   var webViewRef by remember { mutableStateOf<WebView?>(null) }
   var progress by remember { mutableIntStateOf(0) }
   var canGoBack by remember { mutableStateOf(false) }
-  var canGoForward by remember { mutableStateOf(false) }
-  var currentTitle by remember { mutableStateOf("同济教务 (1.tongji.edu.cn)") }
-  var copiedHint by remember { mutableStateOf(false) }
+  var currentTitle by remember { mutableStateOf("同济统一身份认证") }
 
-  BackHandler(enabled = canGoBack) { webViewRef?.goBack() }
+  BackHandler(enabled = true) {
+    if (canGoBack) {
+      webViewRef?.goBack()
+    } else {
+      viewModel.closeWebFallback()
+    }
+  }
 
   DisposableEffect(Unit) {
     onDispose { CookieManager.getInstance().flush() }
@@ -1048,14 +1115,10 @@ private fun PersistentAcademicWebView(
       modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      IconButton(onClick = { webViewRef?.goBack() }, enabled = canGoBack, modifier = Modifier.size(34.dp)) {
-        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "后退", modifier = Modifier.size(18.dp))
-      }
-      IconButton(onClick = { webViewRef?.goForward() }, enabled = canGoForward, modifier = Modifier.size(34.dp)) {
-        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "前进", modifier = Modifier.size(18.dp))
-      }
-      IconButton(onClick = { webViewRef?.reload() }, modifier = Modifier.size(34.dp)) {
-        Icon(Icons.Default.Refresh, contentDescription = "刷新", modifier = Modifier.size(18.dp))
+      TextButton(onClick = viewModel::closeWebFallback) {
+        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(modifier = Modifier.width(2.dp))
+        Text("返回原生", fontSize = 12.sp)
       }
       Text(
         text = currentTitle,
@@ -1064,19 +1127,8 @@ private fun PersistentAcademicWebView(
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
       )
-      FilledTonalButton(
-        onClick = {
-          copiedHint = false
-          webViewRef?.evaluateJavascript(PROBE_DOM_JS) { rawResult ->
-            viewModel.showProbeReport(AcademicProbeFormatter.formatProbeJson(rawResult))
-          }
-        },
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-        modifier = Modifier.height(30.dp),
-      ) {
-        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(14.dp))
-        Spacer(modifier = Modifier.width(4.dp))
-        Text("探测结构", fontSize = 11.sp)
+      IconButton(onClick = { webViewRef?.reload() }, modifier = Modifier.size(34.dp)) {
+        Icon(Icons.Default.Refresh, contentDescription = "刷新", modifier = Modifier.size(18.dp))
       }
       IconButton(onClick = { webViewRef?.loadUrl(uiState.homeUrl) }, modifier = Modifier.size(34.dp)) {
         Icon(Icons.Default.Home, contentDescription = "教务首页", modifier = Modifier.size(18.dp))
@@ -1093,6 +1145,20 @@ private fun PersistentAcademicWebView(
         modifier = Modifier.size(34.dp),
       ) {
         Icon(Icons.Default.Delete, contentDescription = "清除登录态", modifier = Modifier.size(18.dp))
+      }
+    }
+
+    if (!uiState.webFallbackNotice.isNullOrBlank()) {
+      Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+      ) {
+        Text(
+          text = "${uiState.webFallbackNotice}；完成登录后将自动返回原生界面。",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSecondaryContainer,
+          modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        )
       }
     }
 
@@ -1124,16 +1190,17 @@ private fun PersistentAcademicWebView(
             object : WebViewClient() {
               override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 canGoBack = view?.canGoBack() == true
-                canGoForward = view?.canGoForward() == true
-                view?.evaluateJavascript(INSTALL_HOOK_JS, null)
               }
 
               override fun onPageFinished(view: WebView?, url: String?) {
                 canGoBack = view?.canGoBack() == true
-                canGoForward = view?.canGoForward() == true
-                currentTitle = view?.title?.ifBlank { "同济教务" } ?: "同济教务"
-                view?.evaluateJavascript(INSTALL_HOOK_JS, null)
+                currentTitle = view?.title?.ifBlank { "同济统一身份认证" } ?: "同济统一身份认证"
                 CookieManager.getInstance().flush()
+                if (TongjiSsoAutoLoginRunner.isSsoHost(url)) {
+                  viewModel.buildSsoAutofillJsIfSaved()?.let { js ->
+                    view?.evaluateJavascript(js, null)
+                  }
+                }
                 if (url != null && url.contains("1.tongji.edu.cn/workbench")) {
                   viewModel.onWebLoginLanded()
                 }
@@ -1156,55 +1223,6 @@ private fun PersistentAcademicWebView(
         }
       },
       update = { webViewRef = it },
-    )
-  }
-
-  val report = uiState.probeReport
-  if (report != null) {
-    AlertDialog(
-      onDismissRequest = viewModel::dismissProbeReport,
-      title = { Text("Schema 结构探测（已全量脱敏）") },
-      text = {
-        Column(
-          modifier = Modifier.verticalScroll(rememberScrollState()),
-          verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-          SelectionContainer {
-            Text(text = report, style = MaterialTheme.typography.bodySmall)
-          }
-          if (copiedHint) {
-            Text(
-              text = "已复制到剪贴板",
-              style = MaterialTheme.typography.labelMedium,
-              color = MaterialTheme.colorScheme.primary,
-            )
-          }
-        }
-      },
-      confirmButton = {
-        Button(
-          onClick = {
-            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText("tongji_schema_probe", report))
-            copiedHint = true
-          }
-        ) {
-          Text("复制结果")
-        }
-      },
-      dismissButton = {
-        Row {
-          TextButton(
-            onClick = {
-              webViewRef?.evaluateJavascript("window.__campusApiMap = {};", null)
-              viewModel.dismissProbeReport()
-            }
-          ) {
-            Text("清空记录")
-          }
-          TextButton(onClick = viewModel::dismissProbeReport) { Text("关闭") }
-        }
-      },
     )
   }
 }

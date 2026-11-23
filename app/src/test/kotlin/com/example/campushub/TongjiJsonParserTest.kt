@@ -17,6 +17,9 @@ class TongjiJsonParserTest {
         "code": 200,
         "data": {
           "uid": "2300001",
+          "aesKey": "1234567890abcdef",
+          "aesIv": "fedcba0987654321",
+          "sessionid": "demo-session-token",
           "user": {
             "uid": "2300001",
             "name": "同学甲",
@@ -36,6 +39,9 @@ class TongjiJsonParserTest {
     assertEquals("计算机科学与技术", session.majorName)
     assertEquals(2, session.auths.size)
     assertEquals(2002L, session.auths[1].authId)
+    assertEquals("1234567890abcdef", session.aesKey)
+    assertEquals("fedcba0987654321", session.aesIv)
+    assertEquals("demo-session-token", session.sessionId)
 
     val termJson =
       """
@@ -101,7 +107,7 @@ class TongjiJsonParserTest {
         "data": {
           "id": 9,
           "title": "关于期中退课的通知",
-          "content": "<p>请在周五前完成确认</p><p>详情见附件</p>",
+          "content": "<p><strong><span style=\"color:#ff0000\">请在周五前完成确认</span></strong> <a href=\"https://1.tongji.edu.cn/guide\">查看说明</a></p><p>详情见附件</p>",
           "commonAttachmentList": [
             {"id": 1, "fileName": "退课操作指南.pdf", "fileLacation": "obs/guide.pdf"}
           ]
@@ -111,7 +117,10 @@ class TongjiJsonParserTest {
     val detailed = TongjiJsonParser.parseNoticeDetail(detailJson, notices[0])
     assertTrue(detailed.isDetailLoaded)
     assertTrue(detailed.contentText.contains("请在周五前完成确认"))
+    assertTrue(detailed.contentHtml.contains("color:#ff0000"))
+    assertTrue(detailed.contentHtml.contains("<a href=\"https://1.tongji.edu.cn/guide\">"))
     assertEquals(listOf("退课操作指南.pdf"), detailed.attachmentNames)
+    assertEquals("obs/guide.pdf", detailed.attachments.first().fileLocation)
   }
 
   @Test
@@ -193,5 +202,66 @@ class TongjiJsonParserTest {
     assertEquals(2, grades.terms[0].courses.size)
     assertTrue(grades.terms[0].courses[0].isPassed == true)
     assertFalse(grades.terms[0].courses[1].isPassed == true)
+  }
+
+  @Test
+  fun parseCalendarTerms_splitsYearAndTermCleanly() {
+    val calendarJson =
+      """
+      {
+        "code": 200,
+        "data": [
+          {"id": 121, "fullName": "2025-2026学年 第2学期", "weekNum": 18, "currentTermFlag": false},
+          {"id": 122, "fullName": "2026-2027学年第一学期", "weekNum": 19, "currentTermFlag": true},
+          {"id": 123, "fullName": "2026-2027-2", "weekNum": 18, "currentTermFlag": false}
+        ]
+      }
+      """.trimIndent()
+
+    val terms = TongjiJsonParser.parseCalendarTerms(calendarJson)
+    assertEquals(3, terms.size)
+    assertEquals("2025-2026学年", terms[0].yearLabel)
+    assertEquals("第2学期", terms[0].termLabel)
+    assertEquals("2026-2027学年", terms[1].yearLabel)
+    assertEquals("第一学期", terms[1].termLabel)
+    assertEquals("2026-2027学年", terms[2].yearLabel)
+    assertEquals("第2学期", terms[2].termLabel)
+  }
+
+  @Test
+  fun parsePeriodTimes_preventsEveningSlotFromOverwritingPeriod2() {
+    val detailJson =
+      """
+      {
+        "code": 200,
+        "data": {
+          "noWeekendWorkTimes": [
+            {"nodeId": 1, "classNode": "1", "beginTime": "08:00", "endTime": "08:45"},
+            {"nodeId": 2, "classNode": "2", "beginTime": "08:50", "endTime": "09:35"},
+            {"nodeId": 2, "classNode": "11", "beginTime": "20:10", "endTime": "20:55"}
+          ]
+        }
+      }
+      """.trimIndent()
+    val periods = TongjiJsonParser.parsePeriodTimes(detailJson)
+    assertEquals("08:50", periods[2]?.beginTime)
+    assertEquals("20:10", periods[11]?.beginTime)
+
+    val duplicateClassNodeJson =
+      """
+      {
+        "code": 200,
+        "data": {
+          "noWeekendWorkTimes": [
+            {"nodeId": 1, "classNode": "1", "beginTime": "08:00", "endTime": "08:45"},
+            {"nodeId": 2, "classNode": "2", "beginTime": "08:50", "endTime": "09:35"},
+            {"nodeId": 2, "classNode": "晚2", "beginTime": "20:10", "endTime": "20:55"}
+          ]
+        }
+      }
+      """.trimIndent()
+    val chronologicalPeriods = TongjiJsonParser.parsePeriodTimes(duplicateClassNodeJson)
+    assertEquals("08:50", chronologicalPeriods[2]?.beginTime)
+    assertEquals("20:10", chronologicalPeriods[3]?.beginTime)
   }
 }

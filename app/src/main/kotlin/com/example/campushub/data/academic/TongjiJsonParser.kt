@@ -18,6 +18,7 @@ object TongjiJsonParser {
   private val json = Json { ignoreUnknownKeys = true; isLenient = true }
   private val rangeRegex = Regex("(\\d+)\\s*-\\s*(\\d+)")
   private val singleNumRegex = Regex("\\d+")
+  private val yearPrefixRegex = Regex("^\\s*(\\d{4}\\s*-\\s*\\d{4}(?:\\s*学年)?)[\\s\\-]*(.*)$")
 
   data class SessionUserParsed(
     val uid: String,
@@ -25,6 +26,9 @@ object TongjiJsonParser {
     val facultyName: String,
     val majorName: String,
     val auths: List<AcademicMenuAuth> = emptyList(),
+    val aesKey: String = "",
+    val aesIv: String = "",
+    val sessionId: String = "",
   )
 
   data class CurrentTermParsed(
@@ -67,6 +71,9 @@ object TongjiJsonParser {
       facultyName = user.str("facultyName"),
       majorName = extend.str("deptOrMajor"),
       auths = auths,
+      aesKey = data.str("aesKey"),
+      aesIv = data.str("aesIv"),
+      sessionId = data.str("sessionid"),
     )
   }
 
@@ -86,13 +93,57 @@ object TongjiJsonParser {
     return arr.mapNotNull { el ->
       val obj = el.asObj() ?: return@mapNotNull null
       val id = obj.longVal("id") ?: return@mapNotNull null
+      val fullName = obj.str("fullName").ifBlank { "${obj.str("year")} ${obj.str("name")}".trim().ifBlank { "学期" } }
+      val (yearLabel, termLabel) =
+        splitYearAndTerm(
+          fullName = fullName,
+          rawYear = obj.str("year"),
+          rawTerm = obj.str("name"),
+        )
       AcademicCalendarTerm(
         id = id,
-        fullName = obj.str("fullName").ifBlank { "${obj.str("year")} 学期" },
+        fullName = fullName,
         weekNum = (obj.intVal("weekNum") ?: 20).coerceAtLeast(1),
         isCurrent = obj.boolVal("currentTermFlag") == true,
+        yearLabel = yearLabel,
+        termLabel = termLabel,
       )
     }
+  }
+
+  fun splitYearAndTerm(
+    fullName: String,
+    rawYear: String = "",
+    rawTerm: String = "",
+  ): Pair<String, String> {
+    val cleanFull = fullName.trim()
+    val match = yearPrefixRegex.find(cleanFull)
+    if (match != null) {
+      val yearRaw = match.groupValues[1].replace(" ", "")
+      val year = if (yearRaw.endsWith("学年")) yearRaw else "${yearRaw}学年"
+      val rest = match.groupValues[2].trim()
+      val term =
+        when {
+          rest == "1" -> "第1学期"
+          rest == "2" -> "第2学期"
+          rest == "3" -> "第3学期"
+          rest.isNotBlank() -> rest
+          rawTerm.isNotBlank() -> rawTerm.trim()
+          else -> "学期"
+        }
+      return year to term
+    }
+    val yearFallback =
+      rawYear.trim().let {
+        when {
+          it.isBlank() -> "其他"
+          it.endsWith("学年") -> it
+          it.contains("-") -> "${it}学年"
+          else -> "${it}学年度"
+        }
+      }
+    val termFallback = rawTerm.trim().ifBlank { cleanFull.ifBlank { "学期" } }
+    return yearFallback to termFallback
   }
 
   fun parsePeriodTimes(body: String): Map<Int, ClassPeriodTime> {
@@ -102,16 +153,85 @@ object TongjiJsonParser {
         ?: (data["weekendWorkTimes"] as? JsonArray)
         ?: return emptyMap()
 
+    data class ParsedPeriodRow(
+      val periodIndex: Int?,
+      val classNode: String,
+      val beginTime: String,
+      val endTime: String,
+    )
+
+    val rows =
+      arr.mapNotNull { el ->
+        val obj = el.asObj() ?: return@mapNotNull null
+        val classNodeStr = obj.str("classNode")
+        val beginTime = obj.str("beginTime").trim()
+        val endTime = obj.str("endTime").trim()
+        val classNodeNum = singleNumRegex.find(classNodeStr)?.value?.toIntOrNull()
+        val nodeIdNum = obj.intVal("nodeId")
+        val resolvedIndex =
+          when {
+            classNodeNum != null && classNodeNum in 1..20 -> classNodeNum
+            nodeIdNum != null && nodeIdNum in 1..20 -> nodeIdNum
+            else -> null
+          }
+        if (beginTime.isBlank() && resolvedIndex == null) return@mapNotNull null
+        ParsedPeriodRow(
+          periodIndex = resolvedIndex,
+          classNode = classNodeStr.ifBlank { resolvedIndex?.toString().orEmpty() },
+          beginTime = beginTime,
+          endTime = endTime,
+        )
+      }
+
+    if (rows.isEmpty()) return emptyMap()
+
+    fun normalizeTimeKey(time: String): String {
+      val parts = time.split(":")
+      if (parts.size < 2) return time
+      return "${parts[0].trim().padStart(2, '0')}:${parts[1].trim().padStart(2, '0')}"
+    }
+
+    val indices = rows.mapNotNull { it.periodIndex }
+    val hasCollision = indices.size != rows.size || indices.distinct().size != indices.size
+    val directSorted = rows.filter { it.periodIndex != null }.sortedBy { it.periodIndex }
+    val isTimeMonotonic =
+      directSorted
+        .map { normalizeTimeKey(it.beginTime) }
+        .filter { it.isNotBlank() }
+        .zipWithNext()
+        .all { (a, b) -> a <= b }
+
+    if (!hasCollision && isTimeMonotonic) {
+      val map = LinkedHashMap<Int, ClassPeriodTime>()
+      for (row in directSorted) {
+        val idx = row.periodIndex ?: continue
+        map[idx] =
+          ClassPeriodTime(
+            nodeId = idx,
+            classNode = row.classNode.ifBlank { idx.toString() },
+            beginTime = row.beginTime,
+            endTime = row.endTime,
+          )
+      }
+      return map
+    }
+
+    // Fallback when nodeId/classNode collides across sections: order distinct times chronologically.
+    val chronological =
+      rows
+        .filter { it.beginTime.isNotBlank() }
+        .distinctBy { normalizeTimeKey(it.beginTime) }
+        .sortedBy { normalizeTimeKey(it.beginTime) }
+
     val map = LinkedHashMap<Int, ClassPeriodTime>()
-    for (el in arr) {
-      val obj = el.asObj() ?: continue
-      val nodeId = obj.intVal("nodeId") ?: obj.str("classNode").toIntOrNull() ?: continue
-      map[nodeId] =
+    chronological.forEachIndexed { i, row ->
+      val idx = i + 1
+      map[idx] =
         ClassPeriodTime(
-          nodeId = nodeId,
-          classNode = obj.str("classNode").ifBlank { nodeId.toString() },
-          beginTime = obj.str("beginTime"),
-          endTime = obj.str("endTime"),
+          nodeId = idx,
+          classNode = idx.toString(),
+          beginTime = row.beginTime,
+          endTime = row.endTime,
         )
     }
     return map
@@ -130,6 +250,7 @@ object TongjiJsonParser {
         id = obj.longVal("id") ?: title.hashCode().toLong(),
         title = title,
         contentText = cleaned.ifBlank { "正在加载正文..." },
+        contentHtml = rawContent,
         publisher = obj.str("createUser").ifBlank { obj.str("faceUserName") },
         publishTime = obj.str("publishTime").ifBlank { obj.str("startTime") },
         isPinned = obj.str("topStatus") == "1",
@@ -145,23 +266,32 @@ object TongjiJsonParser {
       error("获取通知正文失败 (code=$code): ${root.str("msg")}")
     }
     val data = root["data"].asObj() ?: return fallback
+    val rawHtml = data.str("content").ifBlank { fallback.contentHtml }
     val cleaned =
-      HtmlTextCleaner.toReadableText(data.str("content"))
+      HtmlTextCleaner.toReadableText(rawHtml)
         .ifBlank { fallback.contentText.takeIf { fallback.isDetailLoaded }.orEmpty() }
         .ifBlank { "（该通知暂无文字正文）" }
 
     val attArray = data["commonAttachmentList"] as? JsonArray ?: JsonArray(emptyList())
-    val attachmentNames =
+    val attachments =
       attArray.mapNotNull { el ->
-        el.asObj()?.str("fileName")?.takeIf { it.isNotBlank() }
+        val obj = el.asObj() ?: return@mapNotNull null
+        val fileName = obj.str("fileName").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        val fileLocation =
+          obj.str("fileLacation")
+            .ifBlank { obj.str("fileLocation") }
+            .ifBlank { obj.str("url") }
+            .ifBlank { obj.str("path") }
+        AcademicAttachment(fileName = fileName, fileLocation = fileLocation)
       }
 
     return fallback.copy(
       title = data.str("title").ifBlank { fallback.title },
       contentText = cleaned,
+      contentHtml = rawHtml,
       publisher = data.str("createUser").ifBlank { data.str("faceUserName") }.ifBlank { fallback.publisher },
       publishTime = data.str("publishTime").ifBlank { fallback.publishTime },
-      attachmentNames = attachmentNames,
+      attachments = attachments,
       isDetailLoaded = true,
     )
   }

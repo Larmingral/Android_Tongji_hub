@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.campushub.data.academic.TongjiAcademicApiClient
+import com.example.campushub.data.auth.TongjiCredentialStore
 import com.example.campushub.data.canvas.CanvasApiClient
 import com.example.campushub.data.canvas.CanvasConfigStore
 import com.example.campushub.data.local.CalendarRepository
@@ -55,6 +56,7 @@ class MainActivity : ComponentActivity() {
   private val mailConfigStore by lazy { MailConfigStore(applicationContext) }
   private val imapMailClient by lazy { ImapMailClient() }
   private val academicApiClient by lazy { TongjiAcademicApiClient() }
+  private val tongjiCredentialStore by lazy { TongjiCredentialStore(applicationContext) }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -68,6 +70,7 @@ class MainActivity : ComponentActivity() {
           mailConfigStore = mailConfigStore,
           imapMailClient = imapMailClient,
           academicApiClient = academicApiClient,
+          tongjiCredentialStore = tongjiCredentialStore,
         )
       }
     }
@@ -82,6 +85,7 @@ private fun CampusHubApp(
   mailConfigStore: MailConfigStore,
   imapMailClient: ImapMailClient,
   academicApiClient: TongjiAcademicApiClient,
+  tongjiCredentialStore: TongjiCredentialStore,
 ) {
   var currentTab by rememberSaveable { mutableStateOf(HubTab.CALENDAR) }
 
@@ -89,12 +93,18 @@ private fun CampusHubApp(
     viewModel(factory = CalendarViewModel.Factory(calendarRepository))
   val canvasViewModel: CanvasViewModel =
     viewModel(
-      factory = CanvasViewModel.Factory(canvasConfigStore, canvasApiClient, calendarRepository)
+      factory =
+        CanvasViewModel.Factory(
+          canvasConfigStore,
+          canvasApiClient,
+          calendarRepository,
+          tongjiCredentialStore,
+        )
     )
   val mailViewModel: MailViewModel =
     viewModel(factory = MailViewModel.Factory(mailConfigStore, imapMailClient, calendarRepository))
   val academicViewModel: AcademicViewModel =
-    viewModel(factory = AcademicViewModel.Factory(academicApiClient))
+    viewModel(factory = AcademicViewModel.Factory(academicApiClient, tongjiCredentialStore))
 
   Scaffold(
     modifier = Modifier.fillMaxSize(),

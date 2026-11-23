@@ -6,7 +6,15 @@ import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import kotlin.math.abs
 import kotlinx.serialization.json.Json
+
+data class CanvasGroupedTasks(
+  val pendingWithDue: List<CanvasTaskItem>,
+  val completedWithDue: List<CanvasTaskItem>,
+  val noDueDate: List<CanvasTaskItem>,
+)
 
 object CanvasJsonParser {
 
@@ -230,6 +238,7 @@ object CanvasJsonParser {
   fun mergeDashboardTasks(
     plannerTasks: List<CanvasTaskItem>,
     courseAssignments: List<CanvasTaskItem>,
+    today: LocalDate = LocalDate.now(),
   ): List<CanvasTaskItem> {
     val merged = LinkedHashMap<String, CanvasTaskItem>()
     for (item in plannerTasks) {
@@ -249,7 +258,32 @@ object CanvasJsonParser {
           )
         }
     }
-    return merged.values.sortedWith(compareBy<CanvasTaskItem> { it.isSubmitted }.thenBy(nullsLast()) { it.dueDate })
+    val grouped = groupAndSortTasks(merged.values.toList(), today)
+    return grouped.pendingWithDue + grouped.completedWithDue + grouped.noDueDate
+  }
+
+  fun groupAndSortTasks(
+    tasks: List<CanvasTaskItem>,
+    today: LocalDate = LocalDate.now(),
+  ): CanvasGroupedTasks {
+    val comparator =
+      compareBy<CanvasTaskItem>(
+        { it.dueDate?.let { due -> abs(ChronoUnit.DAYS.between(today, due)) } ?: Long.MAX_VALUE },
+        { it.dueDate?.let { due -> if (due.isBefore(today)) 1 else 0 } ?: 2 },
+        { it.dueTimeText },
+        { it.title },
+      )
+    val pendingWithDue = tasks.filter { !it.isSubmitted && it.dueDate != null }.sortedWith(comparator)
+    val completedWithDue = tasks.filter { it.isSubmitted && it.dueDate != null }.sortedWith(comparator)
+    val noDueDate =
+      tasks
+        .filter { it.dueDate == null }
+        .sortedWith(compareBy<CanvasTaskItem> { it.isSubmitted }.thenBy { it.courseName }.thenBy { it.title })
+    return CanvasGroupedTasks(
+      pendingWithDue = pendingWithDue,
+      completedWithDue = completedWithDue,
+      noDueDate = noDueDate,
+    )
   }
 
   private fun isSubmissionDone(submission: CanvasSubmissionRaw?): Boolean {

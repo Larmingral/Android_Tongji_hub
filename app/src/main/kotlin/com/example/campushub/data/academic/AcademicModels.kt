@@ -16,6 +16,9 @@ data class AcademicSessionInfo(
   val currentWeek: Int,
   val totalWeeks: Int,
   val auths: List<AcademicMenuAuth> = emptyList(),
+  val aesKey: String = "",
+  val aesIv: String = "",
+  val sessionId: String = "",
 )
 
 data class ClassPeriodTime(
@@ -30,18 +33,29 @@ data class AcademicCalendarTerm(
   val fullName: String,
   val weekNum: Int,
   val isCurrent: Boolean,
+  val yearLabel: String = "",
+  val termLabel: String = "",
+)
+
+data class AcademicAttachment(
+  val fileName: String,
+  val fileLocation: String,
 )
 
 data class AcademicNotice(
   val id: Long,
   val title: String,
   val contentText: String,
+  val contentHtml: String = "",
   val publisher: String,
   val publishTime: String,
   val isPinned: Boolean,
-  val attachmentNames: List<String> = emptyList(),
+  val attachments: List<AcademicAttachment> = emptyList(),
   val isDetailLoaded: Boolean = false,
-)
+) {
+  val attachmentNames: List<String>
+    get() = attachments.map { it.fileName }
+}
 
 data class TimetableEntry(
   val teachingClassId: Long,

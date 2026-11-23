@@ -2,6 +2,7 @@ package com.example.campushub
 
 import com.example.campushub.data.canvas.CanvasCourse
 import com.example.campushub.data.canvas.CanvasJsonParser
+import com.example.campushub.data.canvas.CanvasTaskItem
 import java.time.LocalDate
 import java.time.ZoneId
 import org.junit.Assert.assertEquals
@@ -142,5 +143,54 @@ class CanvasJsonParserTest {
     val files = CanvasJsonParser.parseFiles(filesJson)
     assertEquals("Lecture01.pdf", files[0].displayName)
     assertFalse(files[0].downloadUrl.isNullOrBlank())
+  }
+
+  @Test
+  fun groupAndSortTasks_separatesNoDueAndSortsByDistanceToToday() {
+    val today = LocalDate.of(2026, 11, 23)
+    fun task(id: String, due: LocalDate?, submitted: Boolean) =
+      CanvasTaskItem(
+        externalId = id,
+        title = id,
+        courseId = 1L,
+        assignmentId = 1L,
+        courseName = "测试课程",
+        dueDate = due,
+        dueTimeText = "23:59",
+        htmlUrl = null,
+        isSubmitted = submitted,
+        plannableType = "assignment",
+      )
+
+    val grouped =
+      CanvasJsonParser.groupAndSortTasks(
+        tasks =
+          listOf(
+            task("p_far_future", LocalDate.of(2026, 11, 28), false), // dist 5
+            task("p_yesterday", LocalDate.of(2026, 11, 22), false), // dist 1 (past)
+            task("p_today", LocalDate.of(2026, 11, 23), false), // dist 0
+            task("p_tomorrow", LocalDate.of(2026, 11, 24), false), // dist 1 (upcoming)
+            task("c_old", LocalDate.of(2026, 11, 18), true), // dist 5
+            task("c_yesterday", LocalDate.of(2026, 11, 22), true), // dist 1 (past)
+            task("c_future_near", LocalDate.of(2026, 11, 25), true), // dist 2
+            task("c_today", LocalDate.of(2026, 11, 23), true), // dist 0
+            task("nodue_done", null, true),
+            task("nodue_pending", null, false),
+          ),
+        today = today,
+      )
+
+    assertEquals(
+      listOf("p_today", "p_tomorrow", "p_yesterday", "p_far_future"),
+      grouped.pendingWithDue.map { it.externalId },
+    )
+    assertEquals(
+      listOf("c_today", "c_yesterday", "c_future_near", "c_old"),
+      grouped.completedWithDue.map { it.externalId },
+    )
+    assertEquals(
+      listOf("nodue_pending", "nodue_done"),
+      grouped.noDueDate.map { it.externalId },
+    )
   }
 }
