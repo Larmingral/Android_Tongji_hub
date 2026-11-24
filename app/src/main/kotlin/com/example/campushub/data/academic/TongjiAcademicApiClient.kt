@@ -86,12 +86,22 @@ class TongjiAcademicApiClient {
           }
           val examCalendarDeferred = async {
             runCatching {
+              val defaultTypeBody =
+                postJson(
+                  "$BASE_URL/api/electionservice/underGraduateExamSwitch/getDefaultType",
+                  "",
+                  xToken = sessionParsed.sessionId,
+                )
+              val defaultType = TongjiJsonParser.parseExamDefaultType(defaultTypeBody)
               val body =
                 postJson(
-                  "$BASE_URL/api/electionservice/underGraduateExamSwitch/getExamCalendar?examType=1&switchType=1",
-                  "{}",
+                  "$BASE_URL/api/electionservice/underGraduateExamSwitch/getExamCalendar?examType=$defaultType&switchType=null",
+                  defaultType.toString(),
+                  xToken = sessionParsed.sessionId,
                 )
-              TongjiJsonParser.parseExamCalendar(body, 0L)
+              TongjiJsonParser.parseExamCalendar(body, 0L).let { parsed ->
+                if (parsed.examType <= 0) parsed.copy(examType = defaultType) else parsed
+              }
             }.getOrNull()
           }
 
@@ -131,17 +141,25 @@ class TongjiAcademicApiClient {
           }
 
           val examCal = examCalendarDeferred.await()
+          val timetableResult = timetableResultDeferred.await()
           val examCalId = examCal?.calendarId?.takeIf { it > 0L } ?: calendarId
           val examResultDeferred = async {
             if (examCalId <= 0L) {
               ExamQueryResult("", false, "暂无当前学期校历信息", emptyList())
             } else {
               runCatching {
+                activateMenuAuthIfMatched(
+                  sessionParsed.auths,
+                  "stuExamEnquiries",
+                  "考试查询",
+                  xToken = sessionParsed.sessionId,
+                )
                 val examType = examCal?.examType ?: 1
                 val body =
                   postJson(
                     "$BASE_URL/api/electionservice/undergraduateExamQuery/getStudentListPage",
-                    """{"pageNum_":1,"pageSize_":50,"condition":{"calendarId":$examCalId,"examSituation":"","examType":$examType}}""",
+                    """{"pageNum_":1,"pageSize_":100,"condition":{"calendarId":$examCalId,"examSituation":"","examType":$examType}}""",
+                    xToken = sessionParsed.sessionId,
                   )
                 TongjiJsonParser.parseExamQueryResult(
                   body = body,
@@ -159,7 +177,6 @@ class TongjiAcademicApiClient {
             }
           }
 
-          val timetableResult = timetableResultDeferred.await()
           val timetableEntries = timetableResult.getOrDefault(emptyList())
           val timetableError =
             timetableResult.exceptionOrNull()?.let { err ->
@@ -348,6 +365,7 @@ class TongjiAcademicApiClient {
     auths: List<AcademicMenuAuth>,
     urlKeyword: String,
     nameKeyword: String,
+    xToken: String = "",
   ) {
     val matched =
       auths.firstOrNull {
@@ -358,21 +376,22 @@ class TongjiAcademicApiClient {
       postJson(
         "$BASE_URL/api/sessionservice/session/currentAuthId",
         """{"authId":${matched.authId}}""",
+        xToken = xToken,
       )
     }
   }
 
-  private fun get(url: String): String {
-    val request = baseRequestBuilder(url).get().build()
+  private fun get(url: String, xToken: String = ""): String {
+    val request = baseRequestBuilder(url, xToken).get().build()
     return executeJson(request)
   }
 
-  private fun postJson(url: String, jsonBody: String): String {
-    val request = baseRequestBuilder(url).post(jsonBody.toRequestBody(jsonMediaType)).build()
+  private fun postJson(url: String, jsonBody: String, xToken: String = ""): String {
+    val request = baseRequestBuilder(url, xToken).post(jsonBody.toRequestBody(jsonMediaType)).build()
     return executeJson(request)
   }
 
-  private fun baseRequestBuilder(url: String): Request.Builder {
+  private fun baseRequestBuilder(url: String, xToken: String = ""): Request.Builder {
     val cookies = CookieManager.getInstance().getCookie(BASE_URL).orEmpty()
     if (cookies.isBlank()) {
       throw AcademicAuthRequiredException("尚未登录同济教务系统，请保存账密自动续期或网页验证")
@@ -383,6 +402,11 @@ class TongjiAcademicApiClient {
       .header("Accept", "application/json, text/plain, */*")
       .header("Origin", BASE_URL)
       .header("Referer", "$BASE_URL/workbench")
+      .apply {
+        if (xToken.isNotBlank()) {
+          header("X-Token", xToken)
+        }
+      }
   }
 
   private fun executeJson(request: Request): String {

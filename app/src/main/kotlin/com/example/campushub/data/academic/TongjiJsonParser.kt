@@ -1,6 +1,9 @@
 package com.example.campushub.data.academic
 
 import com.example.campushub.util.HtmlTextCleaner
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -19,6 +22,8 @@ object TongjiJsonParser {
   private val rangeRegex = Regex("(\\d+)\\s*-\\s*(\\d+)")
   private val singleNumRegex = Regex("\\d+")
   private val yearPrefixRegex = Regex("^\\s*(\\d{4}\\s*-\\s*\\d{4}(?:\\s*学年)?)[\\s\\-]*(.*)$")
+  private val examDateRegex = Regex("(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})")
+  private val examTimeRegex = Regex("(\\d{1,2}):(\\d{2})")
 
   data class SessionUserParsed(
     val uid: String,
@@ -427,6 +432,12 @@ object TongjiJsonParser {
     return result
   }
 
+  fun parseExamDefaultType(body: String): Int {
+    val root = json.parseToJsonElement(body).asObj() ?: return 1
+    val data = root["data"].asObj() ?: return 1
+    return data.intVal("defaultType") ?: 1
+  }
+
   fun parseExamCalendar(body: String, fallbackCalendarId: Long): ExamCalendarParsed {
     val root = json.parseToJsonElement(body).asObj() ?: JsonObject(emptyMap())
     val data = root["data"].asObj() ?: JsonObject(emptyMap())
@@ -434,7 +445,7 @@ object TongjiJsonParser {
       calendarId = data.longVal("calendarId") ?: fallbackCalendarId,
       examType = data.intVal("examType") ?: data.intVal("defaultType") ?: 1,
       isOpen = (data.intVal("isOpen") ?: 1) == 1,
-      calendarName = data.str("calendarIdI18n"),
+      calendarName = data.firstStr("calendarIdI18n", "calendarName"),
       remark = data.str("remark"),
     )
   }
@@ -446,10 +457,15 @@ object TongjiJsonParser {
   ): ExamQueryResult {
     val root = json.parseToJsonElement(body).asObj() ?: JsonObject(emptyMap())
     val dataElem = root["data"]
+    val outerDataObj = dataElem.asObj()
+    val innerDataObj = outerDataObj?.get("data").asObj()
     val listArray =
-      when (dataElem) {
-        is JsonArray -> dataElem
-        is JsonObject -> (dataElem["list"] as? JsonArray) ?: (dataElem["rows"] as? JsonArray)
+      when {
+        dataElem is JsonArray -> dataElem
+        innerDataObj != null ->
+          (innerDataObj["list"] as? JsonArray) ?: (innerDataObj["rows"] as? JsonArray)
+        outerDataObj != null ->
+          (outerDataObj["list"] as? JsonArray) ?: (outerDataObj["rows"] as? JsonArray)
         else -> null
       }
 
@@ -458,28 +474,57 @@ object TongjiJsonParser {
         val obj = el.asObj() ?: return@mapNotNull null
         val course = obj.firstStr("courseName", "kcmc", "courseTitle", "name")
         if (course.isBlank()) return@mapNotNull null
+        val examTime =
+          obj.firstStr("examTime", "kssj", "examDateTime", "timeStr", "examDate").ifBlank {
+            listOf(obj.str("date"), obj.str("startTime"), obj.str("endTime"))
+              .filter { it.isNotBlank() }
+              .joinToString(" ")
+          }
+        val examRoom =
+          obj.firstStr("examSite", "examRoom", "ksdd", "roomName", "roomId", "address")
+        if (examTime.isBlank() || examRoom.isBlank()) return@mapNotNull null
+
+        val rawRemark = obj.firstStr("remark", "examSituationName", "examTypeName")
+        val situationNote =
+          when (obj.intVal("examSituation")) {
+            2 -> "缓考"
+            3 -> "无资格"
+            4 -> "免试"
+            else -> ""
+          }
+        val remark =
+          listOf(situationNote, rawRemark)
+            .filter { it.isNotBlank() }
+            .distinct()
+            .joinToString(" · ")
+
         ExamEntry(
           courseName = course,
-          courseCode = obj.firstStr("courseCode", "kcdm", "newCourseCode"),
-          examTime =
-            obj.firstStr("examTime", "kssj", "examDateTime", "timeStr", "examDate").ifBlank {
-              listOf(obj.str("date"), obj.str("startTime"), obj.str("endTime"))
-                .filter { it.isNotBlank() }
-                .joinToString(" ")
-            },
-          examRoom = obj.firstStr("examRoom", "ksdd", "roomName", "roomId", "address"),
+          courseCode =
+            obj.firstStr(
+              "newTeachingClassCode",
+              "teachingClassCode",
+              "courseCode",
+              "kcdm",
+              "newCourseCode",
+            ),
+          examTime = examTime,
+          examRoom = examRoom,
           seatNo = obj.firstStr("seatNo", "zwh", "seatNumber"),
-          campus = obj.firstStr("campusName", "campus", "xqName"),
-          remark = obj.firstStr("remark", "examSituationName", "examTypeName"),
+          campus = obj.firstStr("campusI18n", "campusName", "campus", "xqName"),
+          remark = remark,
         )
-      }.orEmpty()
+      }.orEmpty().let(::sortExamsChronologically)
 
     val serverMsg = root.str("message").ifBlank { root.str("msg") }
     val statusMsg =
       when {
         exams.isNotEmpty() -> ""
-        serverMsg.isNotBlank() && !serverMsg.equals("ok", ignoreCase = true) -> serverMsg
+        serverMsg.isNotBlank() &&
+          !serverMsg.equals("ok", ignoreCase = true) &&
+          serverMsg != "操作成功" -> serverMsg
         !isOpen -> "当前学期考试安排查询暂未开放"
+        listArray != null && listArray.isNotEmpty() -> "当前暂无已公布时间地点的考试安排"
         else -> "当前学期暂无考试安排"
       }
 
@@ -489,6 +534,58 @@ object TongjiJsonParser {
       statusMessage = statusMsg,
       exams = exams,
     )
+  }
+
+  /**
+   * Parses the exam start date-time from Tongji examTime text, e.g.
+   * `2027-01-14 第18周 星期四 10:30-12:30`.
+   */
+  fun parseExamStartDateTime(examTime: String): LocalDateTime? {
+    val dateMatch = examDateRegex.find(examTime) ?: return null
+    val year = dateMatch.groupValues[1].toIntOrNull() ?: return null
+    val month = dateMatch.groupValues[2].toIntOrNull() ?: return null
+    val day = dateMatch.groupValues[3].toIntOrNull() ?: return null
+    val date = runCatching { LocalDate.of(year, month, day) }.getOrNull() ?: return null
+
+    val timeMatch = examTimeRegex.find(examTime)
+    val startTime =
+      if (timeMatch != null) {
+        val hour = timeMatch.groupValues[1].toIntOrNull()
+        val minute = timeMatch.groupValues[2].toIntOrNull()
+        if (hour != null && minute != null && hour in 0..23 && minute in 0..59) {
+          LocalTime.of(hour, minute)
+        } else {
+          LocalTime.MIDNIGHT
+        }
+      } else {
+        LocalTime.MIDNIGHT
+      }
+    return LocalDateTime.of(date, startTime)
+  }
+
+  fun sortExamsChronologically(exams: List<ExamEntry>): List<ExamEntry> =
+    exams.sortedWith(
+      compareBy<ExamEntry>(
+        { parseExamStartDateTime(it.examTime) ?: LocalDateTime.MAX },
+        { it.examTime },
+        { it.courseName },
+      ),
+    )
+
+  /**
+   * Sorts exams chronologically and splits them by whether their start time is strictly before [now].
+   */
+  fun partitionExamsByStartTime(
+    exams: List<ExamEntry>,
+    now: LocalDateTime = LocalDateTime.now(),
+  ): ExamSchedulePartition {
+    val sorted = sortExamsChronologically(exams)
+    val (completed, upcoming) =
+      sorted.partition { exam ->
+        val start = parseExamStartDateTime(exam.examTime)
+        start != null && start.isBefore(now)
+      }
+    return ExamSchedulePartition(upcoming = upcoming, completed = completed)
   }
 
   fun parseGrades(body: String): GradeOverview {

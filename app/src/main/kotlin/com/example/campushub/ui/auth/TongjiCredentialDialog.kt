@@ -93,9 +93,16 @@ fun TongjiCredentialDialog(
   var showPassword by remember { mutableStateOf(false) }
   var localError by remember { mutableStateOf<String?>(null) }
   var showAbout by remember { mutableStateOf(false) }
+  var autoCheckUpdate by remember { mutableStateOf(false) }
 
   if (showAbout) {
-    AboutAppDialog(onDismiss = { showAbout = false })
+    AboutAppDialog(
+      onDismiss = {
+        showAbout = false
+        autoCheckUpdate = false
+      },
+      autoCheckUpdates = autoCheckUpdate,
+    )
   }
 
   AlertDialog(
@@ -164,12 +171,31 @@ fun TongjiCredentialDialog(
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.primary,
         )
-        Text(
-          text = "${AppAttributionInfo.APP_NAME} · 原创作者 ${AppAttributionInfo.AUTHOR} · 查看版权与开源声明 >",
-          style = MaterialTheme.typography.labelSmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          modifier = Modifier.clickable { showAbout = true }.padding(top = 2.dp),
-        )
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(
+            text = "${AppAttributionInfo.APP_NAME} · 关于与版权声明",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier =
+              Modifier.clickable {
+                autoCheckUpdate = false
+                showAbout = true
+              },
+          )
+          TextButton(
+            onClick = {
+              autoCheckUpdate = true
+              showAbout = true
+            },
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+          ) {
+            Text("检查更新", fontSize = 12.sp)
+          }
+        }
       }
     },
     confirmButton = {

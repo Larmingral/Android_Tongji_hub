@@ -91,6 +91,11 @@ data class ExamQueryResult(
   val exams: List<ExamEntry>,
 )
 
+data class ExamSchedulePartition(
+  val upcoming: List<ExamEntry>,
+  val completed: List<ExamEntry>,
+)
+
 data class GradeCourseItem(
   val courseName: String,
   val courseCode: String,

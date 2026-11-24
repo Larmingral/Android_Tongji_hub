@@ -1,7 +1,9 @@
 package com.example.campushub
 
 import com.example.campushub.data.academic.AcademicNotice
+import com.example.campushub.data.academic.ExamEntry
 import com.example.campushub.data.academic.TongjiJsonParser
+import java.time.LocalDateTime
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -263,5 +265,96 @@ class TongjiJsonParserTest {
     val chronologicalPeriods = TongjiJsonParser.parsePeriodTimes(duplicateClassNodeJson)
     assertEquals("08:50", chronologicalPeriods[2]?.beginTime)
     assertEquals("20:10", chronologicalPeriods[3]?.beginTime)
+  }
+
+  @Test
+  fun parseExamQueryResult_unwrapsNestedDataListUsesExamSiteAndFiltersIncompleteEntries() {
+    assertEquals(1, TongjiJsonParser.parseExamDefaultType("""{"code":200,"data":{"defaultType":1}}"""))
+
+    val examCal =
+      TongjiJsonParser.parseExamCalendar(
+        """{"code":200,"data":{"calendarId":122,"calendarIdI18n":"2026-2027学年第一学期","examType":1,"isOpen":1}}""",
+        0L,
+      )
+    assertEquals(122L, examCal.calendarId)
+    assertEquals("2026-2027学年第一学期", examCal.calendarName)
+    assertTrue(examCal.isOpen)
+
+    val examJson =
+      """
+      {
+        "code": 200,
+        "msg": "ok",
+        "data": {
+          "switchRrmark": "",
+          "data": {
+            "total_": 3,
+            "list": [
+              {
+                "courseName": "模拟集成电路分析与设计",
+                "newTeachingClassCode": "EIE340501",
+                "examTime": "2027-01-11 第18周 星期一 10:30-12:30",
+                "examSite": "博楼B116",
+                "examSituation": 1,
+                "remark": null
+              },
+              {
+                "courseName": "课程设计实验",
+                "newTeachingClassCode": "EIE399901",
+                "examTime": "",
+                "examSite": "博楼B201",
+                "examSituation": 1,
+                "remark": null
+              },
+              {
+                "courseName": "专题研讨",
+                "newTeachingClassCode": "EIE388801",
+                "examTime": "2027-01-12 第18周 星期二 10:30-12:30",
+                "examSite": "",
+                "examSituation": 2,
+                "remark": "论文考核"
+              }
+            ]
+          }
+        }
+      }
+      """.trimIndent()
+
+    val parsed = TongjiJsonParser.parseExamQueryResult(examJson, examCal.calendarName, examCal.isOpen)
+    assertEquals(1, parsed.exams.size)
+    assertEquals("模拟集成电路分析与设计", parsed.exams[0].courseName)
+    assertEquals("EIE340501", parsed.exams[0].courseCode)
+    assertEquals("2027-01-11 第18周 星期一 10:30-12:30", parsed.exams[0].examTime)
+    assertEquals("博楼B116", parsed.exams[0].examRoom)
+    assertEquals("", parsed.exams[0].remark)
+  }
+
+  @Test
+  fun partitionExamsByStartTime_sortsChronologicallyAndSplitsByStartTimeVsNow() {
+    val exams =
+      listOf(
+        ExamEntry("微波工程与天线设计", "EIE340401", "2027-01-14 第18周 星期四 10:30-12:30", "博楼B116", "", "", ""),
+        ExamEntry("量子力学", "PSE340102", "2027-01-08 第17周 星期五 10:30-12:30", "博楼B103", "", "", ""),
+        ExamEntry("半导体物理", "EIE330601", "2027-01-04 第17周 星期一 08:30-10:30", "博楼B111", "", "", ""),
+        ExamEntry("习近平新时代中国特色社会主义思想概论", "CMA111007", "2027-01-04 第17周 星期一 14:00-16:00", "复楼F213", "", "", ""),
+      )
+
+    assertEquals(
+      LocalDateTime.of(2027, 1, 14, 10, 30),
+      TongjiJsonParser.parseExamStartDateTime("2027-01-14 第18周 星期四 10:30-12:30"),
+    )
+
+    // Cutover exactly at 2027-01-04 14:00: 08:30 is completed, 14:00 and later are upcoming.
+    val partition =
+      TongjiJsonParser.partitionExamsByStartTime(
+        exams = exams,
+        now = LocalDateTime.of(2027, 1, 4, 14, 0),
+      )
+
+    assertEquals(listOf("半导体物理"), partition.completed.map { it.courseName })
+    assertEquals(
+      listOf("习近平新时代中国特色社会主义思想概论", "量子力学", "微波工程与天线设计"),
+      partition.upcoming.map { it.courseName },
+    )
   }
 }

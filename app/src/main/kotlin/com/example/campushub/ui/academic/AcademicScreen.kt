@@ -90,9 +90,12 @@ import com.example.campushub.data.academic.ClassPeriodTime
 import com.example.campushub.data.academic.ExamEntry
 import com.example.campushub.data.academic.GradeTermSummary
 import com.example.campushub.data.academic.TimetableEntry
+import com.example.campushub.data.academic.TongjiJsonParser
 import com.example.campushub.data.auth.TongjiSsoAutoLoginRunner
 import com.example.campushub.ui.auth.TongjiCredentialDialog
 import com.example.campushub.ui.auth.TongjiSsoStatusRow
+import java.time.LocalDateTime
+import java.time.ZoneId
 import kotlin.math.abs
 
 private val COURSE_BG_COLORS =
@@ -666,51 +669,129 @@ private fun ExamsSection(uiState: AcademicUiState) {
     return
   }
 
+  val partition =
+    TongjiJsonParser.partitionExamsByStartTime(
+      exams = examResult.exams,
+      now = LocalDateTime.now(ZoneId.of("Asia/Shanghai")),
+    )
+
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
     contentPadding = PaddingValues(12.dp),
     verticalArrangement = Arrangement.spacedBy(10.dp),
   ) {
-    items(examResult.exams) { exam: ExamEntry ->
-      Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+    if (partition.upcoming.isNotEmpty()) {
+      item {
+        ExamGroupHeader(title = "未考", count = partition.upcoming.size, isCompleted = false)
+      }
+      items(partition.upcoming) { exam ->
+        ExamCard(exam = exam, isCompleted = false)
+      }
+    }
+
+    if (partition.completed.isNotEmpty()) {
+      item {
+        Spacer(modifier = Modifier.height(if (partition.upcoming.isNotEmpty()) 4.dp else 0.dp))
+        ExamGroupHeader(title = "已考", count = partition.completed.size, isCompleted = true)
+      }
+      items(partition.completed) { exam ->
+        ExamCard(exam = exam, isCompleted = true)
+      }
+    }
+  }
+}
+
+@Composable
+private fun ExamGroupHeader(title: String, count: Int, isCompleted: Boolean) {
+  Row(
+    modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 2.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.SpaceBetween,
+  ) {
+    Text(
+      text = "$title（$count）",
+      style = MaterialTheme.typography.titleSmall,
+      fontWeight = FontWeight.Bold,
+      color =
+        if (isCompleted) MaterialTheme.colorScheme.onSurfaceVariant
+        else MaterialTheme.colorScheme.primary,
+    )
+  }
+}
+
+@Composable
+private fun ExamCard(exam: ExamEntry, isCompleted: Boolean) {
+  Surface(
+    shape = RoundedCornerShape(12.dp),
+    color =
+      if (isCompleted) MaterialTheme.colorScheme.surfaceContainerLow
+      else MaterialTheme.colorScheme.surface,
+    border =
+      BorderStroke(
+        1.dp,
+        MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isCompleted) 0.3f else 0.5f),
+      ),
+  ) {
+    Column(
+      modifier = Modifier.fillMaxWidth().padding(12.dp),
+      verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        Column(
-          modifier = Modifier.fillMaxWidth().padding(12.dp),
-          verticalArrangement = Arrangement.spacedBy(4.dp),
+        Text(
+          text = exam.courseName,
+          style = MaterialTheme.typography.bodyLarge,
+          fontWeight = FontWeight.SemiBold,
+          color =
+            if (isCompleted) MaterialTheme.colorScheme.onSurfaceVariant
+            else MaterialTheme.colorScheme.onSurface,
+          modifier = Modifier.weight(1f),
+        )
+        Surface(
+          shape = RoundedCornerShape(6.dp),
+          color =
+            if (isCompleted) MaterialTheme.colorScheme.surfaceVariant
+            else MaterialTheme.colorScheme.primaryContainer,
         ) {
           Text(
-            text = exam.courseName,
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.SemiBold,
+            text = if (isCompleted) "已考" else "未考",
+            style = MaterialTheme.typography.labelSmall,
+            color =
+              if (isCompleted) MaterialTheme.colorScheme.onSurfaceVariant
+              else MaterialTheme.colorScheme.onPrimaryContainer,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
           )
-          if (exam.examTime.isNotBlank()) {
-            Text(
-              text = "时间：${exam.examTime}",
-              style = MaterialTheme.typography.bodyMedium,
-              color = MaterialTheme.colorScheme.error,
-            )
-          }
-          val loc = listOf(exam.campus, exam.examRoom, exam.seatNo.takeIf { it.isNotBlank() }?.let { "座位 $it" })
-            .filterNotNull()
-            .filter { it.isNotBlank() }
-          if (loc.isNotEmpty()) {
-            Text(
-              text = "地点：${loc.joinToString(" · ")}",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
-          if (exam.remark.isNotBlank()) {
-            Text(
-              text = exam.remark,
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
         }
+      }
+      if (exam.examTime.isNotBlank()) {
+        Text(
+          text = "时间：${exam.examTime}",
+          style = MaterialTheme.typography.bodyMedium,
+          color =
+            if (isCompleted) MaterialTheme.colorScheme.onSurfaceVariant
+            else MaterialTheme.colorScheme.error,
+        )
+      }
+      val loc =
+        listOf(exam.campus, exam.examRoom, exam.seatNo.takeIf { it.isNotBlank() }?.let { "座位 $it" })
+          .filterNotNull()
+          .filter { it.isNotBlank() }
+      if (loc.isNotEmpty()) {
+        Text(
+          text = "地点：${loc.joinToString(" · ")}",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+      if (exam.remark.isNotBlank()) {
+        Text(
+          text = exam.remark,
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
       }
     }
   }

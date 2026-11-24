@@ -67,6 +67,7 @@ import com.example.campushub.data.mail.MailBodyBlock
 import com.example.campushub.data.mail.MailDetail
 import com.example.campushub.data.mail.MailHeader
 import com.example.campushub.data.mail.MailImageSource
+import com.example.campushub.ui.auth.AboutAppDialog
 import com.example.campushub.util.FileOpener
 import com.example.campushub.util.HtmlTextCleaner
 import java.io.File
@@ -106,6 +107,14 @@ private fun MailInboxView(
 ) {
   val context = LocalContext.current
   var showPassword by remember { mutableStateOf(false) }
+  var showAboutAndUpdate by remember { mutableStateOf(false) }
+
+  if (showAboutAndUpdate) {
+    AboutAppDialog(
+      onDismiss = { showAboutAndUpdate = false },
+      autoCheckUpdates = true,
+    )
+  }
 
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
@@ -212,6 +221,14 @@ private fun MailInboxView(
                   Spacer(modifier = Modifier.width(6.dp))
                 }
                 Text("连接并拉取最近 30 封邮件")
+              }
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+              ) {
+                TextButton(onClick = { showAboutAndUpdate = true }) {
+                  Text("检查更新与关于 TJ Hub", fontSize = 12.sp)
+                }
               }
             }
           }
