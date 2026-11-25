@@ -1,9 +1,13 @@
 package com.example.campushub.data.academic
 
+import com.example.campushub.data.local.CalendarEvent
+import com.example.campushub.data.local.EventCategory
+import com.example.campushub.data.local.EventSource
 import com.example.campushub.util.HtmlTextCleaner
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
+import java.time.temporal.ChronoUnit
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -24,6 +28,7 @@ object TongjiJsonParser {
   private val yearPrefixRegex = Regex("^\\s*(\\d{4}\\s*-\\s*\\d{4}(?:\\s*学年)?)[\\s\\-]*(.*)$")
   private val examDateRegex = Regex("(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})")
   private val examTimeRegex = Regex("(\\d{1,2}):(\\d{2})")
+  private val examTimeRangeRegex = Regex("(\\d{1,2}:\\d{2}(?:\\s*[-~]\\s*\\d{1,2}:\\d{2})?)")
 
   data class SessionUserParsed(
     val uid: String,
@@ -587,6 +592,64 @@ object TongjiJsonParser {
       }
     return ExamSchedulePartition(upcoming = upcoming, completed = completed)
   }
+
+  fun examDaysUntil(examTime: String, now: LocalDateTime): Long? {
+    val start = parseExamStartDateTime(examTime) ?: return null
+    return ChronoUnit.DAYS.between(now.toLocalDate(), start.toLocalDate())
+  }
+
+  fun formatExamCountdown(
+    examTime: String,
+    now: LocalDateTime,
+    isCompleted: Boolean,
+  ): String {
+    val days = examDaysUntil(examTime, now) ?: return if (isCompleted) "已考" else "未考"
+    return if (isCompleted) {
+      when {
+        days >= 0L -> "今日已考"
+        days == -1L -> "昨天已考"
+        else -> "已考 ${-days} 天"
+      }
+    } else {
+      when {
+        days <= 0L -> "今天开考"
+        days == 1L -> "明天开考"
+        else -> "还有 $days 天"
+      }
+    }
+  }
+
+  fun extractExamTimeRange(examTime: String): String =
+    examTimeRangeRegex.find(examTime)?.value?.replace(Regex("\\s+"), "").orEmpty()
+
+  fun toExamCalendarEvents(exams: List<ExamEntry>): List<CalendarEvent> =
+    exams.mapNotNull { exam ->
+      val start = parseExamStartDateTime(exam.examTime) ?: return@mapNotNull null
+      val examDate = start.toLocalDate()
+      val loc =
+        listOf(exam.campus, exam.examRoom, exam.seatNo.takeIf { it.isNotBlank() }?.let { "座位 $it" })
+          .filterNotNull()
+          .filter { it.isNotBlank() }
+          .joinToString(" · ")
+      val noteLines =
+        buildList {
+          if (loc.isNotBlank()) add("地点：$loc")
+          if (exam.courseCode.isNotBlank()) add("课号：${exam.courseCode}")
+          if (exam.examTime.isNotBlank()) add("时间：${exam.examTime}")
+          if (exam.remark.isNotBlank()) add("备注：${exam.remark}")
+        }
+      val keyBase = exam.courseCode.ifBlank { exam.courseName }.replace(Regex("\\s+"), "_")
+      CalendarEvent(
+        title = "考试：${exam.courseName}",
+        dateEpochDay = examDate.toEpochDay(),
+        timeRange = extractExamTimeRange(exam.examTime),
+        note = noteLines.joinToString("\n"),
+        category = EventCategory.EXAM,
+        isCompleted = false,
+        source = EventSource.TONGJI_EXAM,
+        externalId = "tj_exam_${keyBase}_$examDate",
+      )
+    }
 
   fun parseGrades(body: String): GradeOverview {
     val data = unwrapDataObj(body)

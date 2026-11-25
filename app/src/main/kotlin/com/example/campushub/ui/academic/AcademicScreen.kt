@@ -38,6 +38,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -51,6 +52,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -297,7 +299,12 @@ private fun NativeAcademicView(
       when (uiState.activeSection) {
         AcademicSection.NOTICES -> NoticesSection(notices = dash.notices, onOpenNotice = viewModel::openNotice)
         AcademicSection.TIMETABLE -> TimetableSection(uiState = uiState, viewModel = viewModel)
-        AcademicSection.EXAMS -> ExamsSection(uiState = uiState)
+        AcademicSection.EXAMS ->
+          ExamsSection(
+            uiState = uiState,
+            onSyncToCalendar = viewModel::syncExamsToCalendar,
+            onClearSyncMessage = viewModel::clearExamSyncMessage,
+          )
         AcademicSection.GRADES -> GradesSection(uiState = uiState)
       }
     }
@@ -662,30 +669,67 @@ private fun TimetableGrid(
 }
 
 @Composable
-private fun ExamsSection(uiState: AcademicUiState) {
+private fun ExamsSection(
+  uiState: AcademicUiState,
+  onSyncToCalendar: () -> Unit,
+  onClearSyncMessage: () -> Unit,
+) {
   val examResult = uiState.dashboard?.examResult
   if (examResult == null || examResult.exams.isEmpty()) {
     CenteredNotice(examResult?.statusMessage ?: "当前学期暂无考试安排")
     return
   }
 
-  val partition =
-    TongjiJsonParser.partitionExamsByStartTime(
-      exams = examResult.exams,
-      now = LocalDateTime.now(ZoneId.of("Asia/Shanghai")),
-    )
+  val now = LocalDateTime.now(ZoneId.of("Asia/Shanghai"))
+  val partition = TongjiJsonParser.partitionExamsByStartTime(exams = examResult.exams, now = now)
 
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
     contentPadding = PaddingValues(12.dp),
     verticalArrangement = Arrangement.spacedBy(10.dp),
   ) {
+    item {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text(
+          text = "考试列表（共 ${examResult.exams.size} 门）",
+          style = MaterialTheme.typography.titleMedium,
+          fontWeight = FontWeight.SemiBold,
+          modifier = Modifier.weight(1f),
+        )
+        FilledTonalButton(onClick = onSyncToCalendar) {
+          Icon(Icons.Default.DateRange, contentDescription = null, modifier = Modifier.size(16.dp))
+          Spacer(modifier = Modifier.width(4.dp))
+          Text("一键加入日历", fontSize = 12.sp)
+        }
+      }
+    }
+
+    if (!uiState.examSyncMessage.isNullOrBlank()) {
+      item {
+        Surface(
+          shape = RoundedCornerShape(10.dp),
+          color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+          modifier = Modifier.fillMaxWidth().clickable { onClearSyncMessage() },
+        ) {
+          Text(
+            text = uiState.examSyncMessage,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+          )
+        }
+      }
+    }
+
     if (partition.upcoming.isNotEmpty()) {
       item {
         ExamGroupHeader(title = "未考", count = partition.upcoming.size, isCompleted = false)
       }
       items(partition.upcoming) { exam ->
-        ExamCard(exam = exam, isCompleted = false)
+        ExamCard(exam = exam, now = now, isCompleted = false)
       }
     }
 
@@ -695,7 +739,7 @@ private fun ExamsSection(uiState: AcademicUiState) {
         ExamGroupHeader(title = "已考", count = partition.completed.size, isCompleted = true)
       }
       items(partition.completed) { exam ->
-        ExamCard(exam = exam, isCompleted = true)
+        ExamCard(exam = exam, now = now, isCompleted = true)
       }
     }
   }
@@ -720,7 +764,11 @@ private fun ExamGroupHeader(title: String, count: Int, isCompleted: Boolean) {
 }
 
 @Composable
-private fun ExamCard(exam: ExamEntry, isCompleted: Boolean) {
+private fun ExamCard(exam: ExamEntry, now: LocalDateTime, isCompleted: Boolean) {
+  val countdownLabel = TongjiJsonParser.formatExamCountdown(exam.examTime, now, isCompleted)
+  val daysUntil = TongjiJsonParser.examDaysUntil(exam.examTime, now)
+  val isUrgentUpcoming = !isCompleted && daysUntil != null && daysUntil <= 3L
+
   Surface(
     shape = RoundedCornerShape(12.dp),
     color =
@@ -753,15 +801,22 @@ private fun ExamCard(exam: ExamEntry, isCompleted: Boolean) {
         Surface(
           shape = RoundedCornerShape(6.dp),
           color =
-            if (isCompleted) MaterialTheme.colorScheme.surfaceVariant
-            else MaterialTheme.colorScheme.primaryContainer,
+            when {
+              isCompleted -> MaterialTheme.colorScheme.surfaceVariant
+              isUrgentUpcoming -> MaterialTheme.colorScheme.errorContainer
+              else -> MaterialTheme.colorScheme.primaryContainer
+            },
         ) {
           Text(
-            text = if (isCompleted) "已考" else "未考",
+            text = countdownLabel,
             style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
             color =
-              if (isCompleted) MaterialTheme.colorScheme.onSurfaceVariant
-              else MaterialTheme.colorScheme.onPrimaryContainer,
+              when {
+                isCompleted -> MaterialTheme.colorScheme.onSurfaceVariant
+                isUrgentUpcoming -> MaterialTheme.colorScheme.onErrorContainer
+                else -> MaterialTheme.colorScheme.onPrimaryContainer
+              },
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
           )
         }

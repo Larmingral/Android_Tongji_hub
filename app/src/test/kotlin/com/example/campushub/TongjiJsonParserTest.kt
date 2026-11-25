@@ -3,6 +3,9 @@ package com.example.campushub
 import com.example.campushub.data.academic.AcademicNotice
 import com.example.campushub.data.academic.ExamEntry
 import com.example.campushub.data.academic.TongjiJsonParser
+import com.example.campushub.data.local.EventCategory
+import com.example.campushub.data.local.EventSource
+import java.time.LocalDate
 import java.time.LocalDateTime
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -356,5 +359,20 @@ class TongjiJsonParserTest {
       listOf("习近平新时代中国特色社会主义思想概论", "量子力学", "微波工程与天线设计"),
       partition.upcoming.map { it.courseName },
     )
+
+    val nowJan4Afternoon = LocalDateTime.of(2027, 1, 4, 14, 0)
+    assertEquals("今日已考", TongjiJsonParser.formatExamCountdown(exams[2].examTime, nowJan4Afternoon, true))
+    assertEquals("今天开考", TongjiJsonParser.formatExamCountdown(exams[3].examTime, nowJan4Afternoon, false))
+    assertEquals("还有 4 天", TongjiJsonParser.formatExamCountdown(exams[1].examTime, nowJan4Afternoon, false))
+    assertEquals("还有 10 天", TongjiJsonParser.formatExamCountdown(exams[0].examTime, nowJan4Afternoon, false))
+
+    val calendarEvents = TongjiJsonParser.toExamCalendarEvents(exams)
+    assertEquals(4, calendarEvents.size)
+    assertEquals("考试：微波工程与天线设计", calendarEvents[0].title)
+    assertEquals(LocalDate.of(2027, 1, 14).toEpochDay(), calendarEvents[0].dateEpochDay)
+    assertEquals("10:30-12:30", calendarEvents[0].timeRange)
+    assertEquals(EventCategory.EXAM, calendarEvents[0].category)
+    assertEquals(EventSource.TONGJI_EXAM, calendarEvents[0].source)
+    assertEquals("tj_exam_EIE340401_2027-01-14", calendarEvents[0].externalId)
   }
 }

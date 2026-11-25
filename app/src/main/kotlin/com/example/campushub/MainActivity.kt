@@ -104,7 +104,7 @@ private fun CampusHubApp(
   val mailViewModel: MailViewModel =
     viewModel(factory = MailViewModel.Factory(mailConfigStore, imapMailClient, calendarRepository))
   val academicViewModel: AcademicViewModel =
-    viewModel(factory = AcademicViewModel.Factory(academicApiClient, tongjiCredentialStore))
+    viewModel(factory = AcademicViewModel.Factory(academicApiClient, tongjiCredentialStore, calendarRepository))
 
   Scaffold(
     modifier = Modifier.fillMaxSize(),

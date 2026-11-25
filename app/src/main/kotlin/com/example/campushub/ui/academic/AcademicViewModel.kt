@@ -14,9 +14,11 @@ import com.example.campushub.data.academic.AcademicNotice
 import com.example.campushub.data.academic.ClassPeriodTime
 import com.example.campushub.data.academic.TimetableEntry
 import com.example.campushub.data.academic.TongjiAcademicApiClient
+import com.example.campushub.data.academic.TongjiJsonParser
 import com.example.campushub.data.auth.SsoRefreshResult
 import com.example.campushub.data.auth.TongjiCredentialStore
 import com.example.campushub.data.auth.TongjiSsoAutoLoginRunner
+import com.example.campushub.data.local.CalendarRepository
 import com.example.campushub.util.FileOpener
 import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -57,6 +59,7 @@ data class AcademicUiState(
   val maskedUsername: String? = null,
   val isAutoLoggingIn: Boolean = false,
   val showCredentialDialog: Boolean = false,
+  val examSyncMessage: String? = null,
 ) {
   val activePeriods: Map<Int, ClassPeriodTime>
     get() = overridePeriods ?: dashboard?.periodTimes.orEmpty()
@@ -98,6 +101,7 @@ data class AcademicUiState(
 class AcademicViewModel(
   private val apiClient: TongjiAcademicApiClient,
   private val credentialStore: TongjiCredentialStore,
+  private val calendarRepository: CalendarRepository,
 ) : ViewModel() {
 
   private val _uiState =
@@ -427,6 +431,25 @@ class AcademicViewModel(
     _uiState.update { it.copy(selectedCourseSlot = null) }
   }
 
+  fun syncExamsToCalendar() {
+    val exams = _uiState.value.dashboard?.examResult?.exams.orEmpty()
+    val events = TongjiJsonParser.toExamCalendarEvents(exams)
+    if (events.isEmpty()) {
+      _uiState.update { it.copy(examSyncMessage = "当前暂无可加入日历的考试安排") }
+      return
+    }
+    viewModelScope.launch {
+      val count = calendarRepository.upsertCanvasEvents(events)
+      _uiState.update {
+        it.copy(examSyncMessage = "已同步 $count 门考试到日历（紫标「考试/重要」，重复点击自动去重）")
+      }
+    }
+  }
+
+  fun clearExamSyncMessage() {
+    _uiState.update { it.copy(examSyncMessage = null) }
+  }
+
   private data class AutoRetryOutcome<T>(
     val result: Result<T>,
     val requiresInteractiveFallback: Boolean = false,
@@ -464,9 +487,10 @@ class AcademicViewModel(
   class Factory(
     private val apiClient: TongjiAcademicApiClient,
     private val credentialStore: TongjiCredentialStore,
+    private val calendarRepository: CalendarRepository,
   ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-      AcademicViewModel(apiClient, credentialStore) as T
+      AcademicViewModel(apiClient, credentialStore, calendarRepository) as T
   }
 }

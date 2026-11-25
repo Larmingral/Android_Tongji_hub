@@ -48,7 +48,8 @@ enum class EventCategory(
 
 enum class EventSource {
   LOCAL,
-  CANVAS_DDL;
+  CANVAS_DDL,
+  TONGJI_EXAM;
 
   companion object {
     fun fromNameOrDefault(name: String?): EventSource =
