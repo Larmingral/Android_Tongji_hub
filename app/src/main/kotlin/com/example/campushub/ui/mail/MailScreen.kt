@@ -68,6 +68,8 @@ import com.example.campushub.data.mail.MailDetail
 import com.example.campushub.data.mail.MailHeader
 import com.example.campushub.data.mail.MailImageSource
 import com.example.campushub.ui.auth.AboutAppDialog
+import com.example.campushub.ui.common.ImagePreviewDialog
+import com.example.campushub.ui.common.ImagePreviewPayload
 import com.example.campushub.util.FileOpener
 import com.example.campushub.util.HtmlTextCleaner
 import java.io.File
@@ -97,6 +99,11 @@ fun MailScreen(
     } else {
       MailInboxView(uiState = uiState, viewModel = viewModel)
     }
+  }
+
+  val preview = uiState.previewImage
+  if (preview != null) {
+    ImagePreviewDialog(payload = preview, onDismiss = viewModel::dismissImagePreview)
   }
 }
 
@@ -460,8 +467,7 @@ private fun MailDetailView(
                       source = block.source,
                       altText = block.altText,
                       inlineImageFiles = detail.inlineImageFiles,
-                      onOpenLocalFile = { path -> viewModel.openInlineImageFile(context, path) },
-                      onOpenBase64 = { mime, b64 -> viewModel.openBase64Image(context, mime, b64) },
+                      onPreview = viewModel::openImagePreview,
                     )
                   }
                 }
@@ -524,8 +530,7 @@ private fun InlineMailImage(
   source: MailImageSource,
   altText: String,
   inlineImageFiles: Map<String, String>,
-  onOpenLocalFile: (String) -> Unit,
-  onOpenBase64: (String, String) -> Unit,
+  onPreview: (ImagePreviewPayload) -> Unit,
 ) {
   val context = LocalContext.current
   var loadedBitmap by remember(source, inlineImageFiles) { mutableStateOf<ImageBitmap?>(null) }
@@ -583,11 +588,32 @@ private fun InlineMailImage(
         Modifier.fillMaxWidth()
           .clip(RoundedCornerShape(8.dp))
           .clickable {
+            val title = altText.ifBlank { "邮件内嵌图片" }
             val path = cachedPath
-            if (path != null) {
-              onOpenLocalFile(path)
-            } else if (source is MailImageSource.Base64Data) {
-              onOpenBase64(source.mimeType, source.base64)
+            when {
+              path != null ->
+                onPreview(
+                  ImagePreviewPayload(
+                    title = title,
+                    localFilePath = path,
+                    imageUrl = (source as? MailImageSource.RemoteUrl)?.url,
+                  )
+                )
+              source is MailImageSource.Base64Data ->
+                onPreview(
+                  ImagePreviewPayload(
+                    title = title,
+                    base64Data = source.base64,
+                    mimeType = source.mimeType,
+                  )
+                )
+              source is MailImageSource.RemoteUrl ->
+                onPreview(
+                  ImagePreviewPayload(
+                    title = title,
+                    imageUrl = source.url,
+                  )
+                )
             }
           },
     )

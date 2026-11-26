@@ -83,6 +83,10 @@ import com.example.campushub.data.canvas.CanvasTaskItem
 import com.example.campushub.data.canvas.CanvasViewMode
 import com.example.campushub.ui.auth.TongjiCredentialDialog
 import com.example.campushub.ui.auth.TongjiSsoStatusRow
+import com.example.campushub.ui.common.ImagePreviewDialog
+import com.example.campushub.ui.common.attachPublicDownloadListener
+import com.example.campushub.ui.common.rememberWebViewDownloadTrigger
+import com.example.campushub.ui.common.rememberWebViewFileChooserHandler
 import com.example.campushub.util.HtmlTextCleaner
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
@@ -143,11 +147,19 @@ fun CanvasScreen(
           homeUrl = uiState.baseUrl,
           targetUrl = uiState.webUrlToLoad,
           reloadNonce = uiState.webReloadNonce,
+          statusMessage = uiState.statusMessage,
+          onDismissStatus = viewModel::clearStatusMessage,
+          onWebDownloadStatus = viewModel::reportStatusMessage,
           buildAutofillJs = viewModel::buildSsoAutofillJsIfSaved,
           onWebLoginLanded = viewModel::onWebLoginLanded,
           modifier = Modifier.weight(1f).fillMaxWidth(),
         )
     }
+  }
+
+  val preview = uiState.previewImage
+  if (preview != null) {
+    ImagePreviewDialog(payload = preview, onDismiss = viewModel::dismissPreviewImage)
   }
 
   if (uiState.showCredentialDialog) {
@@ -996,6 +1008,9 @@ private fun PersistentCanvasWebView(
   homeUrl: String,
   targetUrl: String,
   reloadNonce: Int,
+  statusMessage: String?,
+  onDismissStatus: () -> Unit,
+  onWebDownloadStatus: (String) -> Unit,
   buildAutofillJs: () -> String?,
   onWebLoginLanded: (String) -> Unit,
   modifier: Modifier = Modifier,
@@ -1006,6 +1021,8 @@ private fun PersistentCanvasWebView(
   var canGoForward by remember { mutableStateOf(false) }
   var currentTitle by remember { mutableStateOf("Canvas") }
   var lastRequestedKey by remember { mutableStateOf<Pair<String, Int>?>(null) }
+  val fileChooserHandler = rememberWebViewFileChooserHandler()
+  val webDownloadTrigger = rememberWebViewDownloadTrigger(onWebDownloadStatus)
 
   BackHandler(enabled = canGoBack) { webViewRef?.goBack() }
 
@@ -1051,6 +1068,12 @@ private fun PersistentCanvasWebView(
       }
     }
 
+    if (statusMessage != null) {
+      Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+        StatusBanner(message = statusMessage, onDismiss = onDismissStatus)
+      }
+    }
+
     if (progress in 1..99) {
       LinearProgressIndicator(
         progress = { progress / 100f },
@@ -1068,6 +1091,8 @@ private fun PersistentCanvasWebView(
 
           settings.javaScriptEnabled = true
           settings.domStorageEnabled = true
+          settings.allowFileAccess = true
+          settings.allowContentAccess = true
           settings.useWideViewPort = true
           settings.loadWithOverviewMode = true
           settings.setSupportZoom(true)
@@ -1105,7 +1130,16 @@ private fun PersistentCanvasWebView(
               override fun onReceivedTitle(view: WebView?, title: String?) {
                 if (!title.isNullOrBlank()) currentTitle = title
               }
+
+              override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>?,
+                fileChooserParams: FileChooserParams?,
+              ): Boolean =
+                fileChooserHandler.onShowFileChooser(filePathCallback, fileChooserParams)
             }
+
+          attachPublicDownloadListener(webDownloadTrigger)
 
           webViewRef = this
           lastRequestedKey = targetUrl to reloadNonce

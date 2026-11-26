@@ -2,8 +2,13 @@ package com.example.campushub.ui.academic
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.text.TextUtils
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -70,6 +75,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,6 +102,11 @@ import com.example.campushub.data.academic.TongjiJsonParser
 import com.example.campushub.data.auth.TongjiSsoAutoLoginRunner
 import com.example.campushub.ui.auth.TongjiCredentialDialog
 import com.example.campushub.ui.auth.TongjiSsoStatusRow
+import com.example.campushub.ui.common.ImagePreviewDialog
+import com.example.campushub.ui.common.ImagePreviewPayload
+import com.example.campushub.ui.common.attachPublicDownloadListener
+import com.example.campushub.ui.common.rememberWebViewDownloadTrigger
+import com.example.campushub.ui.common.rememberWebViewFileChooserHandler
 import java.time.LocalDateTime
 import java.time.ZoneId
 import kotlin.math.abs
@@ -146,6 +157,11 @@ fun AcademicScreen(
       onSave = viewModel::saveSsoCredentials,
       onClear = viewModel::clearSsoCredentials,
     )
+  }
+
+  val preview = uiState.previewImage
+  if (preview != null) {
+    ImagePreviewDialog(payload = preview, onDismiss = viewModel::dismissImagePreview)
   }
 }
 
@@ -320,6 +336,7 @@ private fun NativeAcademicView(
       attachmentStatus = uiState.attachmentStatus,
       onOpenLink = viewModel::openNoticeLink,
       onOpenAttachment = viewModel::openAttachment,
+      onPreviewImage = viewModel::openImagePreview,
       onDismiss = viewModel::dismissNotice,
     )
   }
@@ -975,6 +992,31 @@ private fun GradeStatColumn(label: String, value: String) {
   }
 }
 
+private val NOTICE_SCRIPT_TAG_REGEX = Regex("(?is)<script\\b[^>]*>.*?</script>")
+
+private class NoticeImageBridge(
+  private val getTitle: () -> String,
+  private val onPreviewImage: (ImagePreviewPayload) -> Unit,
+) {
+  private val mainHandler = Handler(Looper.getMainLooper())
+
+  @JavascriptInterface
+  fun onImageClick(src: String?) {
+    val cleanSrc = src?.trim().orEmpty()
+    if (cleanSrc.isBlank()) return
+    mainHandler.post {
+      val cookies = CookieManager.getInstance().getCookie("https://1.tongji.edu.cn")
+      onPreviewImage(
+        ImagePreviewPayload(
+          title = getTitle().ifBlank { "通知图片" },
+          imageUrl = cleanSrc,
+          cookies = cookies,
+        )
+      )
+    }
+  }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun NoticeDetailDialog(
@@ -985,17 +1027,21 @@ private fun NoticeDetailDialog(
   attachmentStatus: String?,
   onOpenLink: (android.content.Context, String) -> Unit,
   onOpenAttachment: (android.content.Context, AcademicAttachment) -> Unit,
+  onPreviewImage: (ImagePreviewPayload) -> Unit,
   onDismiss: () -> Unit,
 ) {
   val context = LocalContext.current
+  val currentPreviewCallback by rememberUpdatedState(onPreviewImage)
+  val currentTitle by rememberUpdatedState(notice.title)
   val textColorHex = String.format("#%06X", 0xFFFFFF and MaterialTheme.colorScheme.onSurface.toArgb())
   val linkColorHex = String.format("#%06X", 0xFFFFFF and MaterialTheme.colorScheme.primary.toArgb())
   val borderColorHex = String.format("#%06X", 0xFFFFFF and MaterialTheme.colorScheme.outlineVariant.toArgb())
 
   val htmlPayload =
     remember(notice.id, notice.contentHtml, notice.contentText, textColorHex, linkColorHex, borderColorHex) {
+      val cleanHtml = notice.contentHtml.trim().replace(NOTICE_SCRIPT_TAG_REGEX, "")
       val inner =
-        notice.contentHtml.trim().ifBlank {
+        cleanHtml.ifBlank {
           "<p>${TextUtils.htmlEncode(notice.contentText).replace("\n", "<br/>")}</p>"
         }
       """
@@ -1016,7 +1062,7 @@ private fun NoticeDetailDialog(
             overflow-wrap: anywhere;
           }
           a { color: $linkColorHex; text-decoration: underline; }
-          img { max-width: 100%; height: auto; }
+          img { max-width: 100%; height: auto; cursor: zoom-in; }
           table {
             width: 100% !important;
             max-width: 100%;
@@ -1080,12 +1126,42 @@ private fun NoticeDetailDialog(
                 CookieManager.getInstance().setAcceptCookie(true)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                settings.javaScriptEnabled = false
+                settings.javaScriptEnabled = true
                 settings.useWideViewPort = false
                 settings.loadWithOverviewMode = true
                 settings.defaultTextEncodingName = "utf-8"
+                addJavascriptInterface(
+                  NoticeImageBridge(
+                    getTitle = { currentTitle },
+                    onPreviewImage = { currentPreviewCallback(it) },
+                  ),
+                  "TjImageBridge",
+                )
                 webViewClient =
                   object : WebViewClient() {
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                      view?.evaluateJavascript(
+                        """
+                        (function() {
+                          if (window.__tjImgBound) return;
+                          window.__tjImgBound = true;
+                          document.addEventListener('click', function(e) {
+                            var el = e.target;
+                            if (el && el.tagName === 'IMG') {
+                              var src = el.currentSrc || el.src || el.getAttribute('src') || '';
+                              if (src && window.TjImageBridge) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                window.TjImageBridge.onImageClick(src);
+                              }
+                            }
+                          }, true);
+                        })();
+                        """.trimIndent(),
+                        null,
+                      )
+                    }
+
                     override fun shouldOverrideUrlLoading(
                       view: WebView?,
                       request: WebResourceRequest?,
@@ -1233,6 +1309,9 @@ private fun EmergencyAcademicWebView(
   var progress by remember { mutableIntStateOf(0) }
   var canGoBack by remember { mutableStateOf(false) }
   var currentTitle by remember { mutableStateOf("同济统一身份认证") }
+  var webDownloadStatus by remember { mutableStateOf<String?>(null) }
+  val fileChooserHandler = rememberWebViewFileChooserHandler()
+  val webDownloadTrigger = rememberWebViewDownloadTrigger { webDownloadStatus = it }
 
   BackHandler(enabled = true) {
     if (canGoBack) {
@@ -1298,6 +1377,20 @@ private fun EmergencyAcademicWebView(
       }
     }
 
+    if (!webDownloadStatus.isNullOrBlank()) {
+      Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth().clickable { webDownloadStatus = null },
+      ) {
+        Text(
+          text = webDownloadStatus.orEmpty(),
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSecondaryContainer,
+          modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+      }
+    }
+
     if (progress in 1..99) {
       LinearProgressIndicator(
         progress = { progress / 100f },
@@ -1315,6 +1408,8 @@ private fun EmergencyAcademicWebView(
 
           settings.javaScriptEnabled = true
           settings.domStorageEnabled = true
+          settings.allowFileAccess = true
+          settings.allowContentAccess = true
           settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
           settings.useWideViewPort = true
           settings.loadWithOverviewMode = true
@@ -1352,7 +1447,16 @@ private fun EmergencyAcademicWebView(
               override fun onReceivedTitle(view: WebView?, title: String?) {
                 if (!title.isNullOrBlank()) currentTitle = title
               }
+
+              override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?,
+              ): Boolean =
+                fileChooserHandler.onShowFileChooser(filePathCallback, fileChooserParams)
             }
+
+          attachPublicDownloadListener(webDownloadTrigger)
 
           webViewRef = this
           loadUrl(uiState.homeUrl)

@@ -22,6 +22,7 @@ import com.example.campushub.data.local.CalendarEvent
 import com.example.campushub.data.local.CalendarRepository
 import com.example.campushub.data.local.EventCategory
 import com.example.campushub.data.local.EventSource
+import com.example.campushub.ui.common.ImagePreviewPayload
 import com.example.campushub.util.FileOpener
 import java.io.File
 import java.net.URI
@@ -70,6 +71,7 @@ data class CanvasUiState(
   val maskedUsername: String? = null,
   val isAutoLoggingIn: Boolean = false,
   val showCredentialDialog: Boolean = false,
+  val previewImage: ImagePreviewPayload? = null,
 ) {
   val currentSubPage: CanvasSubPage
     get() = backStack.lastOrNull() ?: CanvasSubPage.Dashboard
@@ -386,27 +388,71 @@ class CanvasViewModel(
   ) {
     val state = _uiState.value
     val safeName = FileOpener.sanitizeFileName(fileName, "canvas_file")
-    val targetFile = File(FileOpener.downloadsDir(context), safeName)
+    val tempFile = File(FileOpener.downloadsDir(context), "canvas_${System.nanoTime()}_$safeName")
 
     viewModelScope.launch {
       _uiState.update { it.copy(isFileOpening = true, statusMessage = null) }
       withCanvasAutoSsoRetry(state.baseUrl) {
-        apiClient.downloadFile(downloadUrl, token = "", targetFile, state.baseUrl)
+        apiClient.downloadFile(downloadUrl, token = "", tempFile, state.baseUrl)
       }
         .onSuccess { downloaded ->
-          _uiState.update { it.copy(isFileOpening = false) }
-          FileOpener.openFile(context, downloaded, mimeType).onFailure { err ->
-            _uiState.update {
-              it.copy(statusMessage = "已下载 ${downloaded.name}，但本机无匹配打开应用：${err.message}")
-            }
-          }
+          val savedResult =
+            FileOpener.saveFileToPublicDownloads(
+              context = context,
+              sourceFile = downloaded,
+              desiredFileName = safeName,
+              explicitMimeType = mimeType,
+            )
+          downloaded.delete()
+          savedResult.fold(
+            onSuccess = { saved ->
+              if (FileOpener.isImageFile(saved.fileName, saved.mimeType)) {
+                _uiState.update {
+                  it.copy(
+                    isFileOpening = false,
+                    statusMessage = "已保存至 ${saved.displayPath}",
+                    previewImage =
+                      ImagePreviewPayload(
+                        title = saved.fileName,
+                        contentUri = saved.uri,
+                        mimeType = saved.mimeType,
+                        alreadySavedPath = saved.displayPath,
+                      ),
+                  )
+                }
+              } else {
+                _uiState.update {
+                  it.copy(isFileOpening = false, statusMessage = "已保存至 ${saved.displayPath}")
+                }
+                FileOpener.openUri(context, saved.uri, saved.mimeType).onFailure { err ->
+                  _uiState.update {
+                    it.copy(statusMessage = "已保存至 ${saved.displayPath}，但本机无匹配打开应用：${err.message}")
+                  }
+                }
+              }
+            },
+            onFailure = { err ->
+              _uiState.update {
+                it.copy(isFileOpening = false, statusMessage = "保存到下载目录失败：${err.message}")
+              }
+            },
+          )
         }
         .onFailure { err ->
+          tempFile.delete()
           _uiState.update {
             it.copy(isFileOpening = false, statusMessage = err.message ?: "下载课件失败")
           }
         }
     }
+  }
+
+  fun dismissPreviewImage() {
+    _uiState.update { it.copy(previewImage = null) }
+  }
+
+  fun reportStatusMessage(message: String) {
+    _uiState.update { it.copy(statusMessage = message) }
   }
 
   fun openUrlInWebView(url: String) {

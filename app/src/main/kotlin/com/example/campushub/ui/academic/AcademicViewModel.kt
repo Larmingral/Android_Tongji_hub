@@ -19,6 +19,7 @@ import com.example.campushub.data.auth.SsoRefreshResult
 import com.example.campushub.data.auth.TongjiCredentialStore
 import com.example.campushub.data.auth.TongjiSsoAutoLoginRunner
 import com.example.campushub.data.local.CalendarRepository
+import com.example.campushub.ui.common.ImagePreviewPayload
 import com.example.campushub.util.FileOpener
 import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,6 +61,7 @@ data class AcademicUiState(
   val isAutoLoggingIn: Boolean = false,
   val showCredentialDialog: Boolean = false,
   val examSyncMessage: String? = null,
+  val previewImage: ImagePreviewPayload? = null,
 ) {
   val activePeriods: Map<Int, ClassPeriodTime>
     get() = overridePeriods ?: dashboard?.periodTimes.orEmpty()
@@ -349,22 +351,18 @@ class AcademicViewModel(
 
   fun openAttachment(context: Context, attachment: AcademicAttachment) {
     val safeName = FileOpener.sanitizeFileName(attachment.fileName, "tongji_attachment")
-    val targetFile = File(FileOpener.downloadsDir(context), safeName)
+    val tempFile = File(FileOpener.downloadsDir(context), "tj_${System.nanoTime()}_$safeName")
     val session = _uiState.value.dashboard?.session
 
     viewModelScope.launch {
       _uiState.update { it.copy(isAttachmentOpening = true, attachmentStatus = null) }
-      val outcome = withAutoSsoRetry { apiClient.downloadAttachment(attachment, session, targetFile) }
+      val outcome = withAutoSsoRetry { apiClient.downloadAttachment(attachment, session, tempFile) }
       outcome.result
         .onSuccess { downloaded ->
-          _uiState.update { it.copy(isAttachmentOpening = false) }
-          FileOpener.openFile(context, downloaded).onFailure { err ->
-            _uiState.update {
-              it.copy(attachmentStatus = "已下载 ${downloaded.name}，但本机无匹配打开应用：${err.message}")
-            }
-          }
+          exportAndOpenDownloadedFile(context, downloaded, safeName)
         }
         .onFailure { err ->
+          tempFile.delete()
           _uiState.update {
             it.copy(
               isAttachmentOpening = false,
@@ -388,19 +386,18 @@ class AcademicViewModel(
         runCatching { Uri.parse(cleanUrl).getQueryParameter("fileName") }.getOrNull()
           ?.takeIf { it.isNotBlank() }
           ?: "notice_attachment"
-      val targetFile = File(FileOpener.downloadsDir(context), FileOpener.sanitizeFileName(fallbackName))
+      val safeName = FileOpener.sanitizeFileName(fallbackName, "notice_attachment")
+      val tempFile = File(FileOpener.downloadsDir(context), "tj_link_${System.nanoTime()}_$safeName")
       val session = _uiState.value.dashboard?.session
       viewModelScope.launch {
         _uiState.update { it.copy(isAttachmentOpening = true, attachmentStatus = null) }
-        val outcome = withAutoSsoRetry { apiClient.downloadUrlWithSession(cleanUrl, session, targetFile) }
+        val outcome = withAutoSsoRetry { apiClient.downloadUrlWithSession(cleanUrl, session, tempFile) }
         outcome.result
           .onSuccess { downloaded ->
-            _uiState.update { it.copy(isAttachmentOpening = false) }
-            FileOpener.openFile(context, downloaded).onFailure { err ->
-              _uiState.update { it.copy(attachmentStatus = "已下载文件，无法打开：${err.message}") }
-            }
+            exportAndOpenDownloadedFile(context, downloaded, safeName)
           }
           .onFailure { err ->
+            tempFile.delete()
             _uiState.update {
               it.copy(
                 isAttachmentOpening = false,
@@ -421,6 +418,61 @@ class AcademicViewModel(
     }.onFailure { err ->
       _uiState.update { it.copy(attachmentStatus = "无法打开链接：${err.message}") }
     }
+  }
+
+  private fun exportAndOpenDownloadedFile(
+    context: Context,
+    tempFile: File,
+    desiredFileName: String,
+  ) {
+    val savedResult =
+      FileOpener.saveFileToPublicDownloads(
+        context = context,
+        sourceFile = tempFile,
+        desiredFileName = desiredFileName,
+      )
+    tempFile.delete()
+    savedResult.fold(
+      onSuccess = { saved ->
+        if (FileOpener.isImageFile(saved.fileName, saved.mimeType)) {
+          _uiState.update {
+            it.copy(
+              isAttachmentOpening = false,
+              attachmentStatus = "已保存至 ${saved.displayPath}",
+              previewImage =
+                ImagePreviewPayload(
+                  title = saved.fileName,
+                  contentUri = saved.uri,
+                  mimeType = saved.mimeType,
+                  alreadySavedPath = saved.displayPath,
+                ),
+            )
+          }
+        } else {
+          _uiState.update {
+            it.copy(isAttachmentOpening = false, attachmentStatus = "已保存至 ${saved.displayPath}")
+          }
+          FileOpener.openUri(context, saved.uri, saved.mimeType).onFailure { err ->
+            _uiState.update {
+              it.copy(attachmentStatus = "已保存至 ${saved.displayPath}，但本机无匹配打开应用：${err.message}")
+            }
+          }
+        }
+      },
+      onFailure = { err ->
+        _uiState.update {
+          it.copy(isAttachmentOpening = false, attachmentStatus = "保存到下载目录失败：${err.message}")
+        }
+      },
+    )
+  }
+
+  fun openImagePreview(payload: ImagePreviewPayload) {
+    _uiState.update { it.copy(previewImage = payload) }
+  }
+
+  fun dismissImagePreview() {
+    _uiState.update { it.copy(previewImage = null) }
   }
 
   fun openCourseSlot(entry: TimetableEntry) {

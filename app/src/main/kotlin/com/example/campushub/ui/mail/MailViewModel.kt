@@ -15,6 +15,7 @@ import com.example.campushub.data.mail.MailConfig
 import com.example.campushub.data.mail.MailConfigStore
 import com.example.campushub.data.mail.MailDetail
 import com.example.campushub.data.mail.MailHeader
+import com.example.campushub.ui.common.ImagePreviewPayload
 import com.example.campushub.util.FileOpener
 import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +37,7 @@ data class MailUiState(
   val selectedDetail: MailDetail? = null,
   val errorMessage: String? = null,
   val statusMessage: String? = null,
+  val previewImage: ImagePreviewPayload? = null,
 ) {
   val isShowingDetail: Boolean
     get() = selectedDetail != null || isLoadingDetail
@@ -168,45 +170,68 @@ class MailViewModel(
     _uiState.update { it.copy(selectedDetail = null, isLoadingDetail = false, statusMessage = null) }
   }
 
-  fun openInlineImageFile(context: Context, filePath: String) {
-    val file = File(filePath)
-    if (!file.exists()) return
-    FileOpener.openFile(context, file, "image/*").onFailure { err ->
-      _uiState.update { it.copy(statusMessage = "无法调起图片查看器：${err.message}") }
-    }
+  fun openImagePreview(payload: ImagePreviewPayload) {
+    _uiState.update { it.copy(previewImage = payload) }
   }
 
-  fun openBase64Image(context: Context, mimeType: String, base64: String) {
-    val ext = mimeType.substringAfter('/', "png").ifBlank { "png" }
-    val outFile = File(FileOpener.downloadsDir(context), "inline_${base64.hashCode()}.$ext")
-    runCatching {
-      if (!outFile.exists()) {
-        outFile.writeBytes(Base64.decode(base64, Base64.DEFAULT))
-      }
-      FileOpener.openFile(context, outFile, mimeType)
-    }.onFailure { err ->
-      _uiState.update { it.copy(statusMessage = "无法打开图片：${err.message}") }
-    }
+  fun dismissImagePreview() {
+    _uiState.update { it.copy(previewImage = null) }
   }
 
   fun openAttachment(context: Context, uid: Long, attachment: MailAttachment) {
     val config = currentConfig()
     val safeName = FileOpener.sanitizeFileName(attachment.fileName, "mail_attachment")
-    val destFile = File(FileOpener.downloadsDir(context), "${uid}_$safeName")
+    val tempFile = File(FileOpener.downloadsDir(context), "mail_${uid}_${System.nanoTime()}_$safeName")
 
     viewModelScope.launch {
       _uiState.update { it.copy(isOpeningAttachment = true, statusMessage = null) }
       mailClient
-        .downloadAttachment(config, uid, attachment.partIndex, destFile)
+        .downloadAttachment(config, uid, attachment.partIndex, tempFile)
         .onSuccess { file ->
-          _uiState.update { it.copy(isOpeningAttachment = false) }
-          FileOpener.openFile(context, file, attachment.mimeType).onFailure { err ->
-            _uiState.update {
-              it.copy(statusMessage = "已保存 ${file.name}，但系统无匹配打开应用：${err.message}")
-            }
-          }
+          val savedResult =
+            FileOpener.saveFileToPublicDownloads(
+              context = context,
+              sourceFile = file,
+              desiredFileName = safeName,
+              explicitMimeType = attachment.mimeType,
+            )
+          file.delete()
+          savedResult.fold(
+            onSuccess = { saved ->
+              if (FileOpener.isImageFile(saved.fileName, saved.mimeType)) {
+                _uiState.update {
+                  it.copy(
+                    isOpeningAttachment = false,
+                    statusMessage = "已保存至 ${saved.displayPath}",
+                    previewImage =
+                      ImagePreviewPayload(
+                        title = saved.fileName,
+                        contentUri = saved.uri,
+                        mimeType = saved.mimeType,
+                        alreadySavedPath = saved.displayPath,
+                      ),
+                  )
+                }
+              } else {
+                _uiState.update {
+                  it.copy(isOpeningAttachment = false, statusMessage = "已保存至 ${saved.displayPath}")
+                }
+                FileOpener.openUri(context, saved.uri, saved.mimeType).onFailure { err ->
+                  _uiState.update {
+                    it.copy(statusMessage = "已保存至 ${saved.displayPath}，但系统无匹配打开应用：${err.message}")
+                  }
+                }
+              }
+            },
+            onFailure = { err ->
+              _uiState.update {
+                it.copy(isOpeningAttachment = false, statusMessage = "保存到下载目录失败：${err.message}")
+              }
+            },
+          )
         }
         .onFailure { err ->
+          tempFile.delete()
           _uiState.update {
             it.copy(isOpeningAttachment = false, statusMessage = err.message ?: "下载附件失败")
           }

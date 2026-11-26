@@ -277,6 +277,14 @@ object GitHubUpdateManager {
           tempFile.copyTo(targetFile, overwrite = true)
           tempFile.delete()
         }
+        runCatching {
+          FileOpener.saveFileToPublicDownloads(
+            context = context,
+            sourceFile = targetFile,
+            desiredFileName = safeName,
+            explicitMimeType = "application/vnd.android.package-archive",
+          )
+        }
         targetFile
       }.onFailure { err ->
         if (err is CancellationException) throw err
